@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pandas as pd
 import requests
 
 from . import config
@@ -143,3 +144,72 @@ def baixar_todos(
         logger.info("%s: %s %s", ano, resultado.status, resultado.detalhe)
         resultados.append(resultado)
     return resultados
+
+
+def ler_ano(ano: int) -> pd.DataFrame:
+    """Le o CSV de um ano como texto puro, sem inferir tipo nenhum.
+
+    Deixar o pandas parsear data e numero aqui faria um valor corrompido explodir
+    dentro do read_csv, e o que sobraria para reportar seria um traceback em vez do
+    endereco da linha ruim. Convertido depois, cada problema vira linha rejeitada.
+    """
+    caminho = caminho_csv(ano)
+    df = pd.read_csv(
+        caminho,
+        sep=config.CSV_SEPARADOR,
+        encoding=config.CSV_ENCODING,
+        dtype=str,
+    )
+    df["ano"] = ano
+    df["arquivo_origem"] = caminho.name
+    # +1 pelo cabecalho e +1 porque editor de texto conta a partir de 1, entao o
+    # numero aqui e' o que voce digita no `sed -n Np` para achar a linha original.
+    df["linha_origem"] = df.index + 2
+    return df
+
+
+def converter_tipos(df: pd.DataFrame) -> pd.DataFrame:
+    """Converte para os tipos do contrato. O que nao converte vira NaT/NaN, nao excecao."""
+    # nom_subsistema sai aqui: e' derivavel do id e nao e' estavel entre anos (o SE
+    # aparece como "SUDESTE" ate certo ano e "SUDESTE/CENTRO-OESTE" depois). Guardar
+    # os dois seria convidar o dashboard a agrupar pelo campo errado.
+    convertido = df.drop(columns=["nom_subsistema"]).copy()
+
+    # Formato fixo em vez de inferencia: o ONS entrega sempre YYYY-MM-DD HH:MM:SS, e
+    # qualquer coisa fora disso deve virar NaT para ser rejeitada, nao ser adivinhada.
+    convertido["din_instante"] = pd.to_datetime(
+        df["din_instante"], format="%Y-%m-%d %H:%M:%S", errors="coerce"
+    )
+    convertido["val_cargaenergiahomwmed"] = pd.to_numeric(
+        df["val_cargaenergiahomwmed"], errors="coerce"
+    )
+    convertido["id_subsistema"] = df["id_subsistema"].str.strip()
+
+    return convertido
+
+
+def localizar_fuso(df: pd.DataFrame) -> pd.DataFrame:
+    """Interpreta din_instante como hora local brasileira e anota os casos de horario de verao.
+
+    Anota, nao rejeita: quem decide o destino de uma linha e' o validate. Aqui saem
+    duas colunas novas, din_instante_local (NaT quando a hora nao existiu no relogio)
+    e hora_ambigua (True na hora que aconteceu duas vezes na volta do horario de verao).
+    """
+    localizado = df.copy()
+    naive = df["din_instante"]
+
+    # Mesma hora lida das duas formas possiveis. Quando ela nao e' ambigua, as duas
+    # apontam para o mesmo instante; quando e', diferem em exatamente uma hora. Assim o
+    # codigo pergunta ao banco de fusos do sistema em vez de carregar datas de DST na mao.
+    como_verao = naive.dt.tz_localize(config.FUSO, ambiguous=True, nonexistent="NaT")
+    como_padrao = naive.dt.tz_localize(config.FUSO, ambiguous=False, nonexistent="NaT")
+
+    # O notna() e' necessario porque NaT != NaT e' sempre True, e sem ele toda hora
+    # inexistente seria marcada tambem como ambigua.
+    localizado["hora_ambigua"] = (como_verao != como_padrao) & como_verao.notna()
+
+    # ambiguous=True fica com a primeira ocorrencia, ainda no horario de verao, para
+    # 22:00 e 23:00 seguirem consecutivas em UTC. Ver docs/decisions.md.
+    localizado["din_instante_local"] = como_verao
+
+    return localizado
