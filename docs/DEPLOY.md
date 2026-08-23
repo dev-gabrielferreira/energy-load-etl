@@ -10,26 +10,21 @@ internet → Caddy (HTTPS) → dashboard:8501 ─┐
               pipeline (a cada 12h) ────────┘
 ```
 
-## Antes de começar
+## O ambiente desta VPS
 
-Confirme qual proxy está de pé, porque o resto depende disso:
+Levantado em 23/ago/2026, e é para isto que os arquivos estão configurados:
 
-```bash
-docker ps --format '{{.Names}}\t{{.Image}}' | grep -iE 'caddy|traefik|nginx'
-```
-
-E qual rede ele usa, que é a rede que o compose vai anexar:
-
-```bash
-docker inspect <nome-do-container-do-caddy> -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}'
-```
-
-Se o nome não for `proxy`, guarde o que apareceu: entra no `.env` como `REDE_PROXY`.
+| | |
+|---|---|
+| Proxy | Caddy 2, container `caddy` |
+| Rede | `interna` |
+| Caddyfile | `/home/gabriel/infra/caddy/Caddyfile` |
+| Endereço do painel | `energia.gabrielfdev.com` |
+| Home do portfólio | `gabrielfdev.com` |
 
 ## 1. Apontar o DNS
 
-No painel do seu provedor de domínio, um registro A para o subdomínio, apontando para o
-IP da VPS:
+No provedor do domínio, um registro A para o subdomínio, apontando para o IP da VPS:
 
 ```
 energia   A   <ip-da-vps>
@@ -38,24 +33,24 @@ energia   A   <ip-da-vps>
 Confira antes de seguir, porque o Caddy só emite o certificado depois que o DNS resolve:
 
 ```bash
-dig +short energia.seudominio.com
+dig +short energia.gabrielfdev.com
 ```
 
 ## 2. Subir o código
 
 ```bash
-ssh usuario@vps
+ssh gabriel@vps
 git clone <url-do-repo> ~/apps/energy-load-etl
 cd ~/apps/energy-load-etl
 ```
 
-Crie o `.env` (ele não vai para o git):
+Crie o `.env`, que não vai para o git:
 
 ```bash
 cat > .env <<'EOF'
-PORTFOLIO_URL=https://seudominio.com
+PORTFOLIO_URL=https://gabrielfdev.com
 PORTFOLIO_NOME=Portfólio
-REDE_PROXY=proxy
+REDE_PROXY=interna
 EOF
 ```
 
@@ -82,33 +77,33 @@ Você deve ver as 27 linhas de "particoes escritas" e depois `diario`, `mensal` 
 
 ## 4. Publicar no Caddy
 
-No `Caddyfile` da VPS, um bloco novo:
+Acrescente ao fim de `/home/gabriel/infra/caddy/Caddyfile`:
 
 ```caddyfile
-energia.seudominio.com {
+energia.gabrielfdev.com {
     reverse_proxy energia-dashboard:8501
 }
 ```
 
-É só isso mesmo. O Caddy resolve HTTPS pelo Let's Encrypt sozinho e já encaminha
-WebSocket sem configuração, que é justamente onde deploy de Streamlit costuma travar
-com nginx (sem os cabeçalhos `Upgrade` e `Connection`, a página carrega e nunca sai do
-"Please wait...").
+É só isso mesmo. O Caddy resolve o HTTPS pelo Let's Encrypt sozinho e encaminha
+WebSocket sem configuração nenhuma, que é justamente onde deploy de Streamlit costuma
+travar com nginx: sem os cabeçalhos `Upgrade` e `Connection`, a página carrega e nunca
+sai do "Please wait...".
 
-Recarregue sem derrubar nada:
+Valide a sintaxe antes de recarregar, porque Caddyfile quebrado derruba todos os sites,
+não só este:
 
 ```bash
-docker exec -w /etc/caddy <container-do-caddy> caddy reload
+docker exec -w /etc/caddy caddy caddy validate --config /etc/caddy/Caddyfile
+docker exec -w /etc/caddy caddy caddy reload --config /etc/caddy/Caddyfile
 ```
 
-Se o seu Caddy roda fora do Docker, troque `energia-dashboard:8501` por
-`localhost:8501` e publique a porta no compose (`ports: ["127.0.0.1:8501:8501"]`),
-mantendo o `127.0.0.1` para a porta não ficar exposta na internet.
+O `reload` troca a configuração sem derrubar conexão, então os outros sites não piscam.
 
 ## 5. Conferir
 
 ```bash
-curl -sI https://energia.seudominio.com | head -1     # espera HTTP/2 200
+curl -sI https://energia.gabrielfdev.com | head -1    # espera HTTP/2 200
 docker compose ps                                     # os dois "Up", dashboard "healthy"
 ```
 

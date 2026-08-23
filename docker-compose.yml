@@ -49,7 +49,7 @@ volumes:
 
 networks:
   # A rede onde o Caddy ja esta. `external` porque ela nao pertence a este projeto:
-  # e' criada uma vez na VPS e compartilhada por todos os sites.
+  # existe na VPS antes dele e e' compartilhada por todos os sites que o Caddy serve.
   proxy:
     external: true
-    name: ${REDE_PROXY:-proxy}
+    name: ${REDE_PROXY:-interna}

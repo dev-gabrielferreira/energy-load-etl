@@ -76,6 +76,22 @@ Documento vivo: decisão nova entra aqui no mesmo commit em que entra no código
 | Leitura do painel | só `processed/`, e o horário só numa tela | Quatro das cinco abas leem agregado pronto e abrem instantâneo. A aba de perfil do dia é a única que abre o Parquet horário, e o filtro de ano e subsistema vira poda de pasta no pyarrow: um arquivo de 8.760 linhas em vez dos 108 do dataset. |
 | Limite conhecido: dia vazio na borda | fica de fora do agregado | A janela sai do próprio dado. Dia vazio no meio aparece porque a janela passa por cima dele; dia vazio na primeira ou na última posição não, porque nada indica que deveria existir. Vale para a V4 pelo mesmo motivo. Os três dias vazios do ONS estão todos no meio do ano. Fixado em teste para não ser "consertado" por engano. |
 
+## Deploy
+
+| Decisão | Escolha | Por quê, e o que foi rejeitado |
+|---|---|---|
+| Imagem | uma só, dois comandos | Dashboard e pipeline rodam do mesmo código, mudando só o `command`. Duas imagens seriam duas coisas para manter em sincronia, e a segunda existiria só para repetir a primeira. |
+| Fuso no container | `tzdata` instalado via apt | `python:3.12-slim` não traz `/usr/share/zoneinfo`, e sem ele o `zoneinfo` não conhece `America/Sao_Paulo`. O projeto inteiro se apoia nisso para saber quais horas existiram em cada dia, então o pipeline morreria na primeira linha que tenta localizar um instante. É a dependência menos óbvia e mais crítica da imagem. |
+| Dados na VPS | pipeline roda lá, a cada 12 horas | O painel se atualiza sozinho e o projeto vira pipeline em produção, não Parquet estático que alguém subiu. Rejeitado: embutir o Parquet na imagem, que obrigaria a rebuildar para atualizar dado. |
+| Agendamento | loop de shell no container | Cron dentro de container precisa de init, de configuração de log e de um segundo processo. O loop cabe em dez linhas e falha de uma execução não derruba o serviço: os dados da última execução boa continuam no ar. |
+| Reprocessar tudo a cada ciclo | sim | O ONS revisa dados retroativamente, então reprocessar é o desenho e não desperdício. O `extract` só re-baixa o ano cuja ETag mudou, e uma execução com tudo em cache leva segundos. |
+| Dono do volume | `/dados` criado na imagem | Volume nomeado nasce com as permissões do diretório que existe na imagem naquele caminho. Sem o `mkdir`, ele nasceria de root e o pipeline, que roda como usuário sem privilégio, não conseguiria escrever. |
+| Sistema de arquivos do pipeline | somente-leitura, menos o volume | Tudo que ele grava vai para `/dados`. O resto ser imutável fecha uma porta de graça. |
+| Proxy | Caddy, que já estava na VPS | HTTPS automático e WebSocket encaminhado sem configuração. Com nginx seria preciso lembrar dos cabeçalhos `Upgrade` e `Connection`, e sem eles a página do Streamlit carrega e nunca sai do "Please wait...". |
+| Porta do dashboard | `expose`, não `ports` | Quem fala com a internet é o Caddy, pela rede interna. Publicar a 8501 no host deixaria o painel acessível por IP, contornando o HTTPS. |
+| Cache do painel | 30 minutos de validade | Cache sem prazo faria o dashboard servir para sempre o dado da hora em que o container subiu, sem nunca enxergar o que o agendador gerou. Foi encontrado ao preparar o deploy, não em produção. |
+| Painel sem dados | avisa em vez de estourar | Na primeira subida o dashboard fica de pé antes de o pipeline terminar, e mostrava `FileNotFoundError` para quem abrisse o link. |
+
 ## O que o dado real desmentiu
 
 O plano dizia, com base na documentação do ONS e no funcionamento do horário de verão:
