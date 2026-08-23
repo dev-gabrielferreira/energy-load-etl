@@ -69,9 +69,21 @@ SUBSISTEMAS_VALIDOS = frozenset({"N", "NE", "S", "SE"})
 CARGA_MIN_MWMED = 0.0
 CARGA_MAX_MWMED = 120_000.0
 
-# V6, salto entre horas consecutivas: o limiar por subsistema entra aqui depois de
-# medirmos a distribuicao real dos saltos no historico. Chutar um numero agora so
-# criaria um falso senso de rigor.
+# V6, salto entre horas consecutivas. Dois criterios ao mesmo tempo, porque cada um
+# sozinho falha de um jeito diferente:
+#   - So absoluto erode conforme o sistema cresce. 5.780 MWmed eram 16,5% do pico do
+#     SE em 2000 e sao 9,9% hoje, entao o mesmo numero fica mais sensivel a cada ano.
+#   - So relativo dispara por nada quando a carga base e' pequena. A recuperacao depois
+#     do apagao de 2018 no NE marca 409%, saindo de uma carga residual de 665 MWmed.
+# Medidos no historico 2000-2026: percentil 99,9 do salto relativo e percentil 99 do
+# absoluto, arredondados. Marcam cerca de 0,09% das horas, uns 34 casos por ano, e
+# pegam os apagoes de 2009, 2013 e 2018. Ver docs/decisions.md.
+LIMITE_SALTO = {
+    "N": {"relativo_pct": 15.0, "piso_mwmed": 400.0},
+    "NE": {"relativo_pct": 24.0, "piso_mwmed": 1150.0},
+    "S": {"relativo_pct": 27.5, "piso_mwmed": 1530.0},
+    "SE": {"relativo_pct": 20.5, "piso_mwmed": 3850.0},
+}
 
 
 def criar_pastas() -> None:
