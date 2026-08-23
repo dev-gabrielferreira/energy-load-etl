@@ -3,3 +3,7 @@ data/
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# lixo que o Windows cria ao copiar arquivo para dentro do WSL
+*:Zone.Identifier
