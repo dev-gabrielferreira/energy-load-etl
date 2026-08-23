@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from . import config, extract, load, transform, validate
+from . import aggregate, config, extract, load, transform, validate
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,7 @@ def executar(anos: list[int] | None = None, baixar: bool = True) -> list[ResumoA
     falhas = [d for d in downloads if d.status in ("erro", "ausente")]
 
     marcadas, rejeicoes, buracos, resumos = [], [], [], []
+    diarios, mensais = [], []
     for ano in anos:
         if not extract.caminho_csv(ano).exists():
             logger.warning("%s: sem arquivo local, ano ficou de fora", ano)
@@ -107,10 +108,15 @@ def executar(anos: list[int] | None = None, baixar: bool = True) -> list[ResumoA
 
         if len(df):
             load.escrever_horario(df, ano)
-            # As 35 mil horas do ano vao para o disco e saem da memoria aqui. So as
-            # marcadas continuam, porque o relatorio lista as maiores no fim.
+            diarios.append(aggregate.diario(df))
+            mensais.append(aggregate.mensal(df))
+            # As 35 mil horas do ano vao para o disco e saem da memoria aqui. O que
+            # continua sao os agregados, pequenos, e as marcadas para o relatorio.
             marcadas.append(df[df["salto_suspeito"]].copy())
 
+    if diarios:
+        load.escrever_agregado(pd.concat(diarios, ignore_index=True), load.DIARIO)
+        load.escrever_agregado(pd.concat(mensais, ignore_index=True), load.MENSAL)
     load.escrever_agregado(_quadro_qualidade(resumos), load.QUALIDADE)
     _escrever_relatorio(resumos, rejeicoes, buracos, marcadas, falhas, anos)
     return resumos

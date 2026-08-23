@@ -1,0 +1,15 @@
+[server]
+address = "0.0.0.0"
+port = 8501
+# Sem isso o container tenta abrir um navegador que nao existe.
+headless = true
+# O upload de arquivo nao e' usado em lugar nenhum do painel.
+maxUploadSize = 1
+
+[browser]
+gatherUsageStats = false
+
+[client]
+# Erro de aplicacao nao vira traceback na tela de quem abriu o link.
+showErrorDetails = "none"
+toolbarMode = "minimal"

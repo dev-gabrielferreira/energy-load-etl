@@ -1,0 +1,11 @@
+# Os dados sao gerados pelo pipeline dentro do volume, nunca copiados para a imagem.
+data/
+.venv/
+.git/
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+exercicios/
+tests/
+*:Zone.Identifier

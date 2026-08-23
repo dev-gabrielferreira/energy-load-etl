@@ -1,0 +1,55 @@
+# Dois servicos da mesma imagem, compartilhando um volume: o pipeline escreve o Parquet
+# e o dashboard le. Nenhum dos dois conhece o outro, e e' isso que permite reiniciar o
+# painel sem parar o processamento, e vice-versa.
+
+services:
+  pipeline:
+    build: .
+    image: energy-load-etl:latest
+    container_name: energia-pipeline
+    restart: unless-stopped
+    command: ["sh", "/app/scripts/agendador.sh"]
+    volumes:
+      - dados:/dados
+    environment:
+      DATA_DIR: /dados
+      # De quantas em quantas horas reprocessar. O ONS revisa dados retroativamente,
+      # entao reprocessar tudo e' o desenho, nao desperdicio: o extract so re-baixa o
+      # ano cuja ETag mudou.
+      INTERVALO_HORAS: 12
+    # Ele so baixa e processa, e tudo que grava vai para /dados, inclusive o arquivo
+    # .parte do download. O resto do sistema pode ser somente-leitura. O /tmp e o home
+    # viram tmpfs porque biblioteca nenhuma gosta de nao ter onde escrever cache.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/energia
+
+  dashboard:
+    build: .
+    image: energy-load-etl:latest
+    container_name: energia-dashboard
+    restart: unless-stopped
+    volumes:
+      - dados:/dados:ro
+    environment:
+      DATA_DIR: /dados
+      PORTFOLIO_URL: ${PORTFOLIO_URL:-}
+      PORTFOLIO_NOME: ${PORTFOLIO_NOME:-Portfólio}
+    # Sem ports: quem fala com a internet e' o Caddy, pela rede interna. Publicar a
+    # 8501 no host deixaria o Streamlit acessivel por IP, contornando o HTTPS.
+    expose:
+      - "8501"
+    networks:
+      - default
+      - proxy
+
+volumes:
+  dados:
+
+networks:
+  # A rede onde o Caddy ja esta. `external` porque ela nao pertence a este projeto:
+  # e' criada uma vez na VPS e compartilhada por todos os sites.
+  proxy:
+    external: true
+    name: ${REDE_PROXY:-proxy}

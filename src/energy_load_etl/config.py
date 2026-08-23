@@ -61,6 +61,15 @@ MANIFESTO = RAW_DIR / "_manifest.json"
 
 FUSO = "America/Sao_Paulo"
 
+
+# --- Dashboard ---
+
+# Para onde o link de volta do topo aponta. Fica no .env porque muda por ambiente: na
+# maquina do Gabriel nao ha portfolio nenhum rodando, e na VPS ha. Vazio esconde o link
+# em vez de deixar um botao que nao leva a lugar algum.
+PORTFOLIO_URL = os.getenv("PORTFOLIO_URL", "").strip()
+PORTFOLIO_NOME = os.getenv("PORTFOLIO_NOME", "Portfólio").strip()
+
 SUBSISTEMAS_VALIDOS = frozenset({"N", "NE", "S", "SE"})
 
 # V5, faixa fisica. Carga zero ou negativa nao existe num sistema interligado em

@@ -208,5 +208,5 @@ Checkpoint:
 - [x] Plano aprovado (22/ago/2026)
 - [x] Etapa 0 · ambiente
 - [x] Semana 1 · extract + validate (23/ago/2026). 933.880 linhas lidas nos 27 anos, 260 rejeitadas, 368 horas faltantes detectadas, 909 saltos marcados, 29 testes verdes. Achados em `docs/decisions.md`.
-- [ ] Semana 2 · transform + parquet + dashboard
+- [x] Semana 2 · transform + parquet + dashboard (23/ago/2026). 933.620 linhas em 108 partições Parquet, 38.916 linhas no agregado diário e 1.280 no mensal, dashboard com cinco abas, 56 testes verdes. A soma de horas faltantes do agregado bate exatamente com as 368 horas que a V4 reporta, por dois caminhos de código independentes. Falta o exercício de reescrita da agregação mensal.
 - [ ] Semana 3 · API + produção + lançamento
