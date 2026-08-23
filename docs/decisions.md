@@ -1,0 +1,92 @@
+# Decisões
+
+Cada linha aqui é uma pergunta que já apareceu, ou que vai aparecer, em entrevista.
+Documento vivo: decisão nova entra aqui no mesmo commit em que entra no código.
+
+## Arquitetura
+
+| Decisão | Escolha | Por quê, e o que foi rejeitado |
+|---|---|---|
+| Processamento | pandas | 910 mil linhas cabem na memória com folga. Polars seria mais rápido, mas velocidade não é o gargalo, e trocar de ferramenta tiraria o foco do desenho do pipeline. Polars fica para o P3. |
+| Ambiente | uv | Lockfile reprodutível e `uv sync` deixa qualquer pessoa rodando. Rejeitados: pip com requirements.txt (sem lock confiável) e poetry (mais lento, sem vantagem aqui). |
+| Formato de saída | Parquet | Colunar, tipado, particionável. CSV na saída jogaria fora a tipagem que a validação garantiu. |
+| Layout | raw e processed | Duas camadas: arquivo como veio (imutável) e Parquet limpo. Medalhão de verdade fica para o P2. |
+| Dashboard | Streamlit | O foco é o pipeline, não o front. |
+| Produção | VPS própria, com Docker | Subdomínio próprio conta mais em entrevista que deploy de um clique. Fallback: Streamlit Community Cloud. |
+| Testes | pytest | Fixtures sintéticas pequenas, com foco em caso que importa, não em cobertura. |
+| API de Carga Verificada | Semana 3 | Entra depois do histórico pronto. Se apertar, vira v1.1 e o projeto lança do mesmo jeito. |
+
+## Semana 1
+
+| Decisão | Escolha | Por quê, e o que foi rejeitado |
+|---|---|---|
+| Cliente HTTP | requests | O pipeline baixa 27 arquivos em sequência. httpx traria async e HTTP/2, que não usaríamos. |
+| Leitura do `.env` | python-dotenv | Sem ele, seria preciso exportar variável na shell antes de cada execução. |
+| Versão do Python | 3.12 fixa em `.python-version` | A máquina tem 3.14, mas na Semana 2 entra pyarrow, e versão recém-lançada costuma demorar a ter wheel. Sem wheel, o build compila do zero. |
+| Cache do download | ETag e tamanho por HEAD | HEAD não baixa conteúdo. Com 27 arquivos, é a diferença entre 40 MB por execução e quase nada quando tudo está em cache. Rejeitado: comparar por data de modificação local, que se perde ao copiar arquivo. |
+| Arquivo revisado pelo ONS | Sobrescreve, guardando o histórico de ETag | Revisão do ONS é correção, então o dado novo é mais confiável. O manifesto registra quando cada ano foi revisado, que é a única prova de que mexeram. Rejeitado: versionar o CSV antigo, que faz `data/raw/` crescer sem uso claro. |
+| Escrita do arquivo baixado | Temporário e depois `os.replace` | Download interrompido deixa um `.parte` truncado, nunca um CSV pela metade que a validação leria como íntegro. O temporário fica na mesma pasta porque rename entre sistemas de arquivos não é atômico. |
+| Leitura do CSV | Tudo como texto, conversão explícita depois | Deixar o pandas parsear na leitura faria um valor corrompido explodir dentro do `read_csv`, e sobraria um traceback em vez do endereço da linha ruim. |
+| Formato da data | `format="%Y-%m-%d %H:%M:%S"` fixo | Sem formato explícito o pandas infere pelas primeiras linhas. Inferência pode acertar por acidente num ano e trocar dia por mês em outro, silenciosamente. |
+| `nom_subsistema` | Descartado | Derivável do id e não é estável: o SE aparece como `SUDESTE` até 2025 e `SUDESTE/CENTRO-OESTE` em 2026. Guardar os dois convidaria o dashboard a agrupar pelo campo errado. |
+| Fuso na Semana 1 | Localizar já no extract | O caso mais interessante do projeto aparece no dia 1, e a V4 fica mais simples com grade tz-aware. Rejeitado: adiar para o transform da Semana 2. |
+| Rótulo do fuso | `America/Sao_Paulo`, não UTC | Timestamp com fuso guarda o mesmo instante nos dois casos; muda só o rótulo. Com o rótulo local, o dashboard mostra "pico das 19h" sem converter, e o Parquet guarda em UTC com o fuso nos metadados de qualquer forma. |
+| Hora ambígua (volta do horário de verão) | `ambiguous=True`, a primeira ocorrência | Mantém 22:00 e 23:00 consecutivas em UTC. Com a segunda ocorrência, o salto de 2 horas cairia dentro do pico noturno e a V6 acusaria degrau todo ano, por escolha nossa e não por problema no dado. |
+| Hora inexistente (entrada do horário de verão) | `nonexistent="NaT"` e rejeição | O instante não existiu no relógio local, então não há valor a corrigir nem a salvar. |
+| Valor vazio | Rejeita, com motivo próprio | Regra dura, separada da faixa física. O Parquet nunca carrega NaN em coluna de medição, e o relatório distingue "não mediram" de "mediram errado". |
+| Idioma do código | Português | Alinhado com as colunas da fonte e com o domínio. README continua em inglês. |
+| V1, coluna fora de ordem | Avisa, não bloqueia | O pandas lê por nome, então ordem trocada não quebra nada. Mas é sinal de mexida na fonte, e isso a gente quer ver. Coluna faltando ou renomeada continua bloqueando o ano. |
+| V4, janela de busca | Primeiro ao último instante observados no ano | Fixar 01/01 a 31/12 faria o arquivo do ano corrente acusar milhares de buracos que são só futuro. Como a janela sai de todos os subsistemas juntos, um subsistema que perdeu um dia aparece porque os outros três esticam a janela. |
+| V4, saída | Lista de buracos, não linhas rejeitadas | Ausência não tem linha para rejeitar. Schema próprio, sem arquivo nem linha de origem. |
+| V6, critério | Relativo com piso absoluto, os dois ao mesmo tempo | Só absoluto erode conforme o sistema cresce (5.780 MWmed eram 16,5% do pico do SE em 2000 e são 9,9% hoje). Só relativo dispara por nada quando a carga base é pequena (a recuperação pós-apagão do NE marca 409%, saindo de 665 MWmed). |
+| V6, calibragem | Percentil 99,9 do relativo e 99 do absoluto, medidos em 933 mil observações | Marca 0,097% das horas, cerca de 34 por ano, que é uma lista que um humano consegue revisar. Cortes mais largos marcavam 210 por ano, e alerta que ninguém revisa vira decoração. |
+| V6, nome da marca | `salto_suspeito` | Mantido do plano original. Registrado aqui que "suspeito" quer dizer "merece olhar humano", não "dado errado": no histórico brasileiro a regra acha apagão nacional e jogo da Copa, que são dados corretos sobre eventos atípicos. |
+| Ordem das validações | Fuso antes da faixa física | Na entrada do horário de verão o Sul veio com `0E-8` na hora que não existiu. Rejeitar isso por "carga zero é impossível" seria diagnóstico errado: o problema não é o valor, é o instante. Validação na ordem errada produz explicação falsa. |
+| Falha de download | Segue com os anos que deram certo | Rede instável não pode derrubar a execução inteira. Os anos que faltaram aparecem em aviso no topo do relatório, antes de qualquer número, porque relatório incompleto que não avisa que está incompleto é pior que relatório nenhum. |
+| Memória do pipeline | Não acumula as aprovadas | Na Semana 1 nada consome os 933 mil registros validados, então guardá-los custaria uns 300 MB de RAM sem servir a ninguém. O pipeline guarda só resumos, rejeições, buracos e marcações. |
+
+## O que o dado real desmentiu
+
+O plano dizia, com base na documentação do ONS e no funcionamento do horário de verão:
+
+> Nos dados antigos existe um dia por ano com 23 horas e outro com 25, com hora
+> duplicada de madrugada.
+
+Metade disso é falso, e descobrimos abrindo os arquivos.
+
+**Dias de 25 horas não existem.** Na volta do horário de verão as 23:00 aconteciam
+duas vezes, com cargas diferentes, mas o formato do ONS usa o timestamp local como
+chave e não tem onde guardar as duas. Uma das medições foi descartada na origem. O
+pipeline detecta isso: são exatamente 4 horas faltantes por ano (uma por subsistema)
+em todos os anos de 2000 a 2019, e zero de 2020 em diante, quando o país acabou com o
+horário de verão. A validação reconstruiu uma mudança de política pública a partir do
+formato do arquivo.
+
+**Dias de 23 horas existem, mas não em todos os anos.** Na entrada do horário de verão
+o relógio pulava de 00:00 para 01:00. Até 2013 o ONS simplesmente não gravava a linha,
+e o dia tem 23. De 2014 a 2018 ele grava a linha com o campo vazio, e o dia tem 24.
+Em 04/11/2018, três subsistemas vieram em branco e o Sul veio com `0E-8`.
+
+Consequência de desenho: **nenhuma contagem funciona**. Não existe "24 linhas por dia"
+nem "8.760 por ano" que valha para todos os anos, porque existe linha que não é hora e
+hora que não tem linha. Por isso a V4 compara conjuntos: pede a grade de instantes
+reais ao `zoneinfo` e subtrai o que chegou. Não há nenhuma data de horário de verão
+escrita no código.
+
+## Achados de qualidade no histórico
+
+Encontrados pelo próprio pipeline, sem ninguém procurar.
+
+- **Três dias inteiros sem medição**: 01/12/2013, 01/02/2014 e 09/04/2015. Em 2014 e
+  2015 o Norte não tem nem linha, enquanto os outros três têm linha com campo vazio.
+- **Abril de 2020, subsistema Norte**: salto horário médio de 336 MWmed contra 109 a
+  147 em todos os outros meses do mesmo ano, e máximo de 2.076 contra 350 a 717. Três
+  vezes a variabilidade normal, sustentada por um mês, com volta ao normal em maio.
+  Causa desconhecida. Lockdown explicaria queda de nível, não triplicação da
+  variabilidade hora a hora. Fica como pergunta para os relatórios de operação do ONS.
+- **Os dez maiores saltos do histórico são quatro apagões e seis jogos de Copa do
+  Mundo.** Apagões: 21/01/2002 (SE), 10/11/2009 (SE, o maior blecaute do país),
+  28/08/2013 (NE) e 21/03/2018 (N e NE). Jogos: Copa 2006 (quatro partidas, incluindo
+  a final), Copa 2010 e Copa 2014. Todos os jogos aparecem às 18:00, no Sudeste, como
+  subida entre 7.283 e 9.022 MWmed. Parar para assistir é gradual; voltar ao trabalho
+  é abrupto, e é a retomada que dispara a regra.

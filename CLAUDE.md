@@ -23,7 +23,8 @@ Este é um projeto de PORTFÓLIO e de APRENDIZADO. O Gabriel precisa defender ca
 
 - Python gerenciado com uv (`uv add`, `uv run`). Nunca pip install direto.
 - pandas para processamento (Polars é decisão rejeitada, ver docs/decisions.md).
-- Timestamps são hora local America/Sao_Paulo. O Brasil teve horário de verão até 2019: dias de 23 e 25 horas existem nos dados e são tratados, nunca "limpados".
+- Timestamps são hora local America/Sao_Paulo. O Brasil teve horário de verão até 2019, e o efeito nos arquivos do ONS não é o que a intuição diz: dias de 25 horas **não existem** (o ONS perde uma medição real por ano na volta do horário de verão), e dias de 23 horas existem só até 2013, porque de 2014 a 2018 a hora inexistente vem como linha vazia. Verificado no dado, ver `docs/decisions.md`. Nada disso é "limpado": é tratado e reportado.
+- Nenhuma validação pode contar linhas. Existe linha que não é hora e hora que não tem linha, então "24 por dia" e "8.760 por ano" estão errados em algum ano. Compare conjuntos de instantes, perguntando a grade ao `zoneinfo`.
 - Dados brutos em `data/raw/` são imutáveis. O pipeline nunca edita arquivo bruto.
 - Toda validação nova precisa de teste em `tests/` com fixture sintética pequena.
 - Falha da API de Carga Verificada nunca pode derrubar o fluxo histórico.

@@ -62,7 +62,14 @@ Verificado no portal de dados abertos do ONS e no dicionário oficial. É a base
 
 ### A pegadinha central
 
-O Brasil teve horário de verão até 2019. Nos dados antigos existe um dia por ano com 23 horas e outro com 25, com hora duplicada de madrugada. Qualquer validação ingênua de "24 horas por dia" quebra. A nossa valida por calendário local, não por contagem fixa. Esse caso tem teste próprio e parágrafo próprio no README.
+> Corrigido na semana 1, depois de abrir os arquivos. O texto original dizia que existem dias de 23 e de 25 horas. Metade estava errada, e a versão abaixo é a verificada. Registro completo em `docs/decisions.md`.
+
+O Brasil teve horário de verão até 2019, e o efeito nos arquivos do ONS é assimétrico:
+
+- **Na volta (fevereiro), dias de 25 horas não existem.** As 23:00 aconteciam duas vezes, com cargas diferentes, mas o formato usa o timestamp local como chave e não tem onde guardar as duas. Uma medição real foi descartada na origem. São 4 horas perdidas por ano, uma por subsistema, em todos os anos de 2000 a 2019, e zero de 2020 em diante.
+- **Na entrada (outubro), dias de 23 horas existem, mas só até 2013.** Depois disso o ONS passou a gravar a linha da hora inexistente com o campo vazio, e o dia volta a ter 24 linhas. Em 04/11/2018, três subsistemas vieram em branco e o Sul veio com `0E-8`.
+
+Consequência: **nenhuma contagem funciona.** Não existe "24 por dia" nem "8.760 por ano" que valha para todos os anos, porque existe linha que não é hora e hora que não tem linha. A V4 compara conjuntos: pede a grade de instantes reais ao `zoneinfo` e subtrai o que chegou, sem nenhuma data de horário de verão escrita no código. Esse caso tem teste próprio e parágrafo próprio no README.
 
 ## 5. As validações
 
@@ -72,10 +79,10 @@ Na ordem em que rodam. O que falha não é descartado em silêncio: cai no relat
 |---|---|---|---|
 | V1 | Schema: 4 colunas com os tipos do contrato | Mudança de layout em ano antigo, coluna renomeada, arquivo corrompido | bloqueia |
 | V2 | id_subsistema ∈ {N, NE, S, SE} | Código novo ou sujeira indicando mudança estrutural na fonte | bloqueia |
-| V3 | Unicidade de (subsistema, instante) | Duplicata, com exceção tratada da hora repetida do fim do horário de verão | bloqueia |
-| V4 | Continuidade do calendário por subsistema, em hora local | Buraco de horas, respeitando dias de 23 e 25 horas até 2019 | bloqueia |
-| V5 | Faixa física: 0 < carga < 120.000 MWmed | Zero espúrio, negativo, valor absurdo. Teto bem acima do recorde do sistema, decisão documentada | bloqueia |
-| V6 | Salto plausível entre horas consecutivas, limiar por subsistema | Degrau artificial que costuma indicar falha de medição | marca como suspeito |
+| V3 | Unicidade de (subsistema, instante localizado) | Duplicata | bloqueia |
+| V4 | Continuidade do calendário por subsistema, em hora local | Buraco de horas, comparando com a grade real do fuso | reporta buraco |
+| V5 | Valor ausente, e faixa física: 0 < carga < 120.000 MWmed | Medição em branco, zero espúrio, negativo, valor absurdo. Teto bem acima do recorde do sistema, decisão documentada | bloqueia |
+| V6 | Salto plausível entre horas consecutivas, relativo com piso absoluto por subsistema | Degrau atípico. Na prática acha apagão nacional e jogo da Copa, não falha de medição | marca como suspeito |
 | V7 | Reconciliação API × histórico (semana 3) | Divergência entre semi-horário agregado da API e horário consolidado do arquivo | marca e reporta |
 
 A distinção entre regra dura (V1-V5) e regra de alerta (V6-V7) é decisão de engenharia e vai explicada no README.
@@ -138,7 +145,7 @@ O coração do projeto. Download dos 27 arquivos com cache local e re-download q
 Entregável:
 - `extract.py` e `validate.py` funcionando de ponta a ponta nos 27 anos
 - Relatório de qualidade: quantas linhas passaram, quantas caíram e por quê, ano a ano
-- Testes das validações, incluindo os dias de 23 e 25 horas
+- Testes das validações, incluindo as duas transições de horário de verão nos dois formatos em que o ONS as grava
 - Exercício de reescrita: refazer a V4 (continuidade de calendário) do zero
 
 Checkpoint:
@@ -199,7 +206,7 @@ Checkpoint:
 ## 10. Status
 
 - [x] Plano aprovado (22/ago/2026)
-- [ ] Etapa 0 · ambiente
-- [ ] Semana 1 · extract + validate
+- [x] Etapa 0 · ambiente
+- [x] Semana 1 · extract + validate (23/ago/2026). 933.880 linhas lidas nos 27 anos, 260 rejeitadas, 368 horas faltantes detectadas, 909 saltos marcados, 29 testes verdes. Achados em `docs/decisions.md`.
 - [ ] Semana 2 · transform + parquet + dashboard
 - [ ] Semana 3 · API + produção + lançamento
