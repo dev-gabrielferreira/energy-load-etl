@@ -4,10 +4,11 @@ Batch pipeline for 26 years of Brazilian electricity load data, from raw CSV to 
 dashboard in production.
 
 **[Live dashboard](https://energia.gabrielfdev.com)** · 
+[Versão em português](README.pt-BR.md)
 ![Dashboard1](docs/dashboard1.png)
 ![Dashboard2](docs/dashboard2.png)
 ![Dashboard](docs/dashboard.png)
-[Versão em português](README.pt-BR.md)
+
 
 933,880 hourly measurements published by ONS, the Brazilian grid operator, downloaded
 with cache invalidation, put through six validation rules, written to partitioned

@@ -12,4 +12,9 @@ gatherUsageStats = false
 [client]
 # Erro de aplicacao nao vira traceback na tela de quem abriu o link.
 showErrorDetails = "none"
-toolbarMode = "minimal"
+
+# "viewer" mantem o menu do visitante, com o seletor de tema (claro, escuro ou o do
+# sistema), e deixa de fora as opcoes de desenvolvedor. Com "minimal" o menu inteiro
+# some, e some com ele a unica forma de trocar de tema: o Streamlit nao tem API para
+# fazer isso por codigo, entao um seletor proprio na pagina sairia na base da giria.
+toolbarMode = "viewer"
