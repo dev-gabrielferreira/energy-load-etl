@@ -10,6 +10,8 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from energy_load_etl import extract
+
 COLUNAS = ["id_subsistema", "nom_subsistema", "din_instante", "val_cargaenergiahomwmed"]
 
 # Transicoes reais do horario de verao brasileiro usadas nos testes.
@@ -46,6 +48,11 @@ def horas(
         bruto = None if h in vazias else f"{valor + h * 10:.2f}"
         linhas.append((subsistema, "SUDESTE", f"{dia} {h:02d}:00:00", bruto))
     return linhas
+
+
+def preparar(linhas: list[tuple], ano: int = 2018) -> pd.DataFrame:
+    """Leva o cru ate o ponto em que as validacoes de linha rodam."""
+    return extract.localizar_fuso(extract.converter_tipos(montar_cru(linhas, ano=ano)))
 
 
 @pytest.fixture

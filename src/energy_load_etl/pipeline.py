@@ -1,20 +1,20 @@
-"""Ponto de entrada do pipeline: baixa, valida e publica o relatorio de qualidade.
+"""Ponto de entrada do pipeline: baixa, valida, escreve o Parquet e publica o relatorio.
 
-Processa ano a ano e nao acumula o historico aprovado em memoria. Na Semana 1 nada
-consome esses 933 mil registros ainda, entao guardar todos custaria RAM sem servir a
-ninguem. O que fica e' so o que o relatorio precisa mostrar.
+Processa ano a ano e escreve cada ano antes de passar para o proximo. O historico
+aprovado nunca fica inteiro em memoria: o que sobrevive ao loop sao os resumos, as
+rejeicoes, os buracos e as linhas marcadas, que juntos nao chegam a mil linhas.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
 import pandas as pd
 
-from . import config, extract, validate
+from . import config, extract, load, transform, validate
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class ResumoAno:
 
 
 def processar_ano(ano: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, ResumoAno]:
-    """Roda o funil inteiro num ano. Devolve marcadas, rejeitadas, buracos e o resumo."""
+    """Roda o funil inteiro num ano. Devolve aprovadas, rejeitadas, buracos e o resumo."""
     resumo = ResumoAno(ano)
     vazio_buracos = pd.DataFrame(columns=list(validate.COLUNAS_BURACO))
 
@@ -52,7 +52,7 @@ def processar_ano(ano: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, R
     if erro:
         resumo.bloqueio = erro
         logger.error("%s: V1 bloqueou o ano inteiro (%s)", ano, erro)
-        return pd.DataFrame(), validate.rejeicoes_vazias(), vazio_buracos, resumo
+        return transform.vazio_processado(), validate.rejeicoes_vazias(), vazio_buracos, resumo
 
     df = extract.localizar_fuso(extract.converter_tipos(cru))
 
@@ -73,8 +73,8 @@ def processar_ano(ano: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, R
     resumo.buracos = len(buracos)
     resumo.marcadas = int(df["salto_suspeito"].sum())
 
-    # So as marcadas seguem viagem. As aprovadas ficam para a Semana 2 ler de novo.
-    return df[df["salto_suspeito"]].copy(), rejeicoes, buracos, resumo
+    processado = transform.selecionar_colunas_finais(transform.adicionar_calendario(df))
+    return processado, rejeicoes, buracos, resumo
 
 
 def executar(anos: list[int] | None = None, baixar: bool = True) -> list[ResumoAno]:
@@ -91,7 +91,7 @@ def executar(anos: list[int] | None = None, baixar: bool = True) -> list[ResumoA
             logger.warning("%s: sem arquivo local, ano ficou de fora", ano)
             continue
 
-        m, r, b, resumo = processar_ano(ano)
+        df, r, b, resumo = processar_ano(ano)
         resumos.append(resumo)
         logger.info(
             "%s: lidas %s | aprovadas %s | rejeitadas %s | buracos %s | marcadas %s",
@@ -104,11 +104,28 @@ def executar(anos: list[int] | None = None, baixar: bool = True) -> list[ResumoA
         if len(b):
             b.to_csv(config.REJECTED_DIR / f"buracos_{ano}.csv", index=False)
             buracos.append(b)
-        if len(m):
-            marcadas.append(m)
 
+        if len(df):
+            load.escrever_horario(df, ano)
+            # As 35 mil horas do ano vao para o disco e saem da memoria aqui. So as
+            # marcadas continuam, porque o relatorio lista as maiores no fim.
+            marcadas.append(df[df["salto_suspeito"]].copy())
+
+    load.escrever_agregado(_quadro_qualidade(resumos), load.QUALIDADE)
     _escrever_relatorio(resumos, rejeicoes, buracos, marcadas, falhas, anos)
     return resumos
+
+
+def _quadro_qualidade(resumos: list[ResumoAno]) -> pd.DataFrame:
+    """Os resumos como tabela, para o dashboard mostrar a saude do dado.
+
+    Vai para processed/ e nao para rejected/ porque o dashboard le so o processado.
+    Se ele precisasse abrir o relatorio de rejeitados para se montar, a regra de que
+    ele nunca toca no que nao passou pela validacao seria so uma frase no README.
+    """
+    quadro = pd.DataFrame([asdict(r) for r in resumos])
+    quadro["bloqueio"] = quadro["bloqueio"].fillna("")
+    return quadro
 
 
 def _tabela(linhas: list[str], cabecalho: str, separador: str) -> str:

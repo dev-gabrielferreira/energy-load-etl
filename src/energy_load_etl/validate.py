@@ -10,7 +10,7 @@ import logging
 
 import pandas as pd
 
-from . import config
+from . import config, transform
 
 logger = logging.getLogger(__name__)
 
@@ -129,9 +129,7 @@ def v4_continuidade(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=list(COLUNAS_BURACO))
 
     instantes_do_ano = pd.DatetimeIndex(df["din_instante_local"])
-    grade = pd.date_range(
-        instantes_do_ano.min(), instantes_do_ano.max(), freq="h", tz=config.FUSO
-    )
+    grade = transform.grade_local(instantes_do_ano.min(), instantes_do_ano.max())
 
     buracos = []
     for subsistema, grupo in df.groupby("id_subsistema", observed=True):
@@ -164,7 +162,13 @@ def v6_salto(df: pd.DataFrame) -> pd.DataFrame:
     Exige os dois criterios do config.LIMITE_SALTO ao mesmo tempo.
     """
     if df.empty:
-        return df
+        # Sem linha nao ha salto, mas quem consome depende das colunas existirem. Devolver
+        # o DataFrame pelado aqui faria o pipeline quebrar so no ano que a V1 bloqueou.
+        vazio = df.copy()
+        vazio["salto_mwmed"] = pd.Series(dtype="float64")
+        vazio["salto_pct"] = pd.Series(dtype="float64")
+        vazio["salto_suspeito"] = pd.Series(dtype="bool")
+        return vazio
 
     pedacos = []
     for subsistema, grupo in df.groupby("id_subsistema", observed=True):

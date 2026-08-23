@@ -5,14 +5,15 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from energy_load_etl import extract, validate
-from tests.conftest import ENTRADA_DST_2005, ENTRADA_DST_2018, VOLTA_DST_2018, horas, montar_cru
-
-
-def preparar(linhas, ano=2018):
-    """Leva o cru ate o ponto em que as validacoes de linha rodam."""
-    return extract.localizar_fuso(extract.converter_tipos(montar_cru(linhas, ano=ano)))
-
+from energy_load_etl import validate
+from tests.conftest import (
+    ENTRADA_DST_2005,
+    ENTRADA_DST_2018,
+    VOLTA_DST_2018,
+    horas,
+    montar_cru,
+    preparar,
+)
 
 # --- V1: schema ---------------------------------------------------------------
 

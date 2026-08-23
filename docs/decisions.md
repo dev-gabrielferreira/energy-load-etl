@@ -45,6 +45,21 @@ Documento vivo: decisão nova entra aqui no mesmo commit em que entra no código
 | Falha de download | Segue com os anos que deram certo | Rede instável não pode derrubar a execução inteira. Os anos que faltaram aparecem em aviso no topo do relatório, antes de qualquer número, porque relatório incompleto que não avisa que está incompleto é pior que relatório nenhum. |
 | Memória do pipeline | Não acumula as aprovadas | Na Semana 1 nada consome os 933 mil registros validados, então guardá-los custaria uns 300 MB de RAM sem servir a ninguém. O pipeline guarda só resumos, rejeições, buracos e marcações. |
 
+## Semana 2
+
+| Decisão | Escolha | Por quê, e o que foi rejeitado |
+|---|---|---|
+| Engine do Parquet | pyarrow | Caminho maduro para Parquet particionado no pandas, e já era o motivo de fixar o Python 3.12. Rejeitado: fastparquet, com suporte pior a datetime com fuso, que é justamente a coluna central deste projeto. |
+| Feriados | biblioteca `holidays` | Carnaval, Sexta-Santa e Corpus Christi dependem do cálculo da Páscoa. Reimplementar isso seriam trinta linhas para manter num assunto que não é o do projeto, e erro no cálculo passaria silencioso. |
+| Quais feriados marcar | nacionais **e** pontos facultativos | Carnaval e Corpus Christi não são feriado por lei federal, mas a carga cai neles como cai em feriado: no SE, terça de Carnaval de 2018 às 10h marca 36.268 MWmed contra 44.932 na terça seguinte, 19% a menos. O critério é o efeito no que a gente mede, não a definição jurídica. Custo aceito: Dia do Servidor Público entra junto e quase não afeta carga. |
+| Estação do ano | limites de data fixos (21/12, 21/03, 21/06, 23/09) | O solstício anda um ou dois dias entre anos e isso não muda carga de energia. O objetivo da coluna é agrupar por clima, não marcar efeméride. |
+| Grade de horas | uma função só, em `transform.grade_local` | A V4 e a agregação fazem a mesma pergunta ("quais horas existiram no relógio"). Duas implementações um dia divergiriam, e aí o relatório de buracos e o agregado dariam respostas diferentes sobre o mesmo dia. |
+| Escrita do Parquet | pasta explícita por partição, arquivo de nome fixo | Reprocessar um ano sobrescreve o anterior. `to_parquet(partition_cols=...)` gera nomes com UUID, e reprocessar deixaria o arquivo antigo do lado do novo: o dado dobraria em silêncio. Verificado rodando o pipeline duas vezes, com a contagem estável em 933.620. |
+| Colunas de partição | saem de dentro do arquivo | `ano` e `id_subsistema` já estão no caminho, no padrão Hive, e voltam na leitura. Repetir o mesmo valor em 35 mil linhas seria pagar duas vezes pela mesma informação. |
+| Colunas fora do processado | `din_instante`, `arquivo_origem`, `linha_origem` | O naive é redundante com o localizado, e o rastreio serve ao relatório de rejeitados, não à camada processada. Quem precisar voltar ao CSV bruto acha a linha pelo par (subsistema, instante). |
+| Tabela de qualidade | em `processed/`, não em `rejected/` | O dashboard lê só o processado. Se ele precisasse abrir o relatório de rejeitados para se montar, a regra de que ele nunca toca no que não passou pela validação seria só uma frase no README. |
+| Memória do pipeline (revisão) | escreve o ano e o descarta | Revoga em parte a decisão da Semana 1, que era "não acumula porque nada consome". Agora existe consumidor: cada ano vai para o disco e sai da memória, e o que sobrevive ao loop são resumos, rejeições, buracos e as 909 linhas marcadas. |
+
 ## O que o dado real desmentiu
 
 O plano dizia, com base na documentação do ONS e no funcionamento do horário de verão:
