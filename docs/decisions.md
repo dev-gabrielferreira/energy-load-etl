@@ -90,6 +90,7 @@ Documento vivo: decisão nova entra aqui no mesmo commit em que entra no código
 | Proxy | Caddy, que já estava na VPS | HTTPS automático e WebSocket encaminhado sem configuração. Com nginx seria preciso lembrar dos cabeçalhos `Upgrade` e `Connection`, e sem eles a página do Streamlit carrega e nunca sai do "Please wait...". |
 | Porta do dashboard | `expose`, não `ports` | Quem fala com a internet é o Caddy, pela rede interna. Publicar a 8501 no host deixaria o painel acessível por IP, contornando o HTTPS. |
 | Cache do painel | 30 minutos de validade | Cache sem prazo faria o dashboard servir para sempre o dado da hora em que o container subiu, sem nunca enxergar o que o agendador gerou. Foi encontrado ao preparar o deploy, não em produção. |
+| Healthcheck no pipeline | desligado | A imagem é uma só, e o healthcheck dela pergunta ao Streamlit se está de pé. O pipeline não roda Streamlit, então ficava marcado unhealthy para sempre. Alarme que sempre toca ninguém escuta. Visto no primeiro `docker compose ps` da VPS. |
 | Painel sem dados | avisa em vez de estourar | Na primeira subida o dashboard fica de pé antes de o pipeline terminar, e mostrava `FileNotFoundError` para quem abrisse o link. |
 
 ## O que o dado real desmentiu

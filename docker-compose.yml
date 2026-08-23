@@ -17,6 +17,11 @@ services:
       # entao reprocessar tudo e' o desenho, nao desperdicio: o extract so re-baixa o
       # ano cuja ETag mudou.
       INTERVALO_HORAS: 12
+    # O healthcheck da imagem pergunta ao Streamlit se ele esta de pe', e aqui nao ha
+    # Streamlit nenhum: este servico roda o agendador. Sem desligar, o container fica
+    # marcado unhealthy para sempre, e alarme que sempre toca ninguem escuta.
+    healthcheck:
+      disable: true
     # Ele so baixa e processa, e tudo que grava vai para /dados, inclusive o arquivo
     # .parte do download. O resto do sistema pode ser somente-leitura. O /tmp e o home
     # viram tmpfs porque biblioteca nenhuma gosta de nao ter onde escrever cache.

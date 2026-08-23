@@ -22,6 +22,10 @@ SUBSISTEMAS = ("N", "NE", "S", "SE")
 NOMES = {"N": "Norte", "NE": "Nordeste", "S": "Sul", "SE": "Sudeste/Centro-Oeste"}
 MESES = ("jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez")
 
+# As 24 horas como o relogio as mostra. "07:00h" e' o que a pessoa le no relogio; "7"
+# e' o indice que o codigo usa, e nao tem por que vazar para a tela.
+RELOGIO = tuple(f"{h:02d}:00h" for h in range(24))
+
 # Um conjunto de cores so, para os dois temas.
 #
 # A tentativa anterior trocava a paleta conforme o tema detectado, e nao funcionava:
@@ -715,6 +719,7 @@ with perfil:
     horas = ler_horas(int(ano_perfil), sub_perfil).copy()
     horas["tipo"] = tipo_de_dia(horas)
     media = horas.groupby(["tipo", "hora"], as_index=False)["val_cargaenergiahomwmed"].mean()
+    media["relogio"] = media["hora"].map(RELOGIO.__getitem__)
 
     figura = go.Figure()
     for nome_tipo, cor in CORES_DIA.items():
@@ -723,7 +728,7 @@ with perfil:
             continue
         figura.add_trace(
             go.Scatter(
-                x=parte["hora"],
+                x=parte["relogio"],
                 y=parte["val_cargaenergiahomwmed"],
                 mode="lines+markers",
                 name=nome_tipo,
@@ -732,7 +737,17 @@ with perfil:
                 hovertemplate=dica(nome_tipo, "MWmed", CORES_TOOLTIP_DIA[nome_tipo]),
             )
         )
-    figura.update_xaxes(title_text="hora do dia", dtick=3)
+    # Eixo de categorias com a ordem declarada: sem isso o Plotly ordenaria as horas
+    # pela ordem em que apareceram nos dados. Os ticks saem de tres em tres para os
+    # rotulos nao se encavalarem, mas o tooltip mostra a hora exata de qualquer ponto.
+    figura.update_xaxes(
+        title_text="hora do dia",
+        type="category",
+        categoryorder="array",
+        categoryarray=RELOGIO,
+        tickmode="array",
+        tickvals=RELOGIO[::3],
+    )
     figura.update_yaxes(title_text="MWmed")
 
     contagem = horas.groupby("tipo")["data"].nunique()
@@ -748,9 +763,9 @@ with perfil:
 
     pico_util = media[media["tipo"] == "Dia útil"]
     if not pico_util.empty:
-        hora_pico = int(pico_util.loc[pico_util["val_cargaenergiahomwmed"].idxmax(), "hora"])
+        hora_pico = pico_util.loc[pico_util["val_cargaenergiahomwmed"].idxmax(), "relogio"]
         nota(
-            f"O dia útil tem <strong>vale de madrugada e pico às {hora_pico}h</strong>. "
+            f"O dia útil tem <strong>vale de madrugada e pico às {hora_pico}</strong>. "
             "Entre 9h e 15h a distância para o fim de semana é a indústria e o comércio "
             "ligados. Por volta das 18h as três curvas se aproximam: à noite o consumo é "
             "quase todo residencial, e a essa hora todo mundo está em casa de qualquer jeito. "

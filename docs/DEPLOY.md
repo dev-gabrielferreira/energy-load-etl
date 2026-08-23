@@ -36,11 +36,43 @@ Confira antes de seguir, porque o Caddy só emite o certificado depois que o DNS
 dig +short energia.gabrielfdev.com
 ```
 
-## 2. Subir o código
+## 2. Dar acesso ao repositório
+
+Enquanto o repositório é privado, a VPS precisa de uma deploy key: uma chave SSH que
+vale só para este repositório e só para leitura. Token de acesso pessoal também
+funcionaria, mas expira e vale para a conta inteira.
 
 ```bash
-ssh gabriel@vps
-git clone <url-do-repo> ~/apps/energy-load-etl
+ssh-keygen -t ed25519 -C "vps-energia-load-etl" -f ~/.ssh/energy_load_etl -N ""
+cat ~/.ssh/energy_load_etl.pub
+```
+
+No GitHub, em Settings do repositório → Deploy keys → Add deploy key, cole a chave e
+**não** marque "Allow write access". A VPS só lê; sem escrita, uma chave vazada não
+altera o código.
+
+```bash
+cat >> ~/.ssh/config <<'EOF'
+
+Host github-energia
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/energy_load_etl
+    IdentitiesOnly yes
+EOF
+chmod 600 ~/.ssh/config
+
+ssh -T git@github-energia    # "successfully authenticated" e exit 1 é o esperado
+```
+
+O `IdentitiesOnly yes` evita um erro difícil de diagnosticar: sem ele o SSH oferece
+todas as chaves da máquina, o GitHub aceita a primeira que servir, e um repositório que
+existe responde "repository not found".
+
+## 3. Subir o código
+
+```bash
+git clone git@github-energia:dev-gabrielferreira/energy-load-etl.git ~/apps/energy-load-etl
 cd ~/apps/energy-load-etl
 ```
 
@@ -56,7 +88,7 @@ EOF
 
 `PORTFOLIO_URL` é para onde o link do topo do painel leva. Vazio esconde o link.
 
-## 3. Subir os containers
+## 4. Subir os containers
 
 ```bash
 docker compose up -d --build
@@ -75,7 +107,7 @@ docker compose logs -f pipeline
 Você deve ver as 27 linhas de "particoes escritas" e depois `diario`, `mensal` e
 `qualidade`. No fim, `[agendador] proxima em 12h`.
 
-## 4. Publicar no Caddy
+## 5. Publicar no Caddy
 
 Acrescente ao fim de `/home/gabriel/infra/caddy/Caddyfile`:
 
@@ -100,7 +132,7 @@ docker exec -w /etc/caddy caddy caddy reload --config /etc/caddy/Caddyfile
 
 O `reload` troca a configuração sem derrubar conexão, então os outros sites não piscam.
 
-## 5. Conferir
+## 6. Conferir
 
 ```bash
 curl -sI https://energia.gabrielfdev.com | head -1    # espera HTTP/2 200
