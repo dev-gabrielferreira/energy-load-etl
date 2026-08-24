@@ -209,4 +209,18 @@ Checkpoint:
 - [x] Etapa 0 · ambiente
 - [x] Semana 1 · extract + validate (23/ago/2026). 933.880 linhas lidas nos 27 anos, 260 rejeitadas, 368 horas faltantes detectadas, 909 saltos marcados, 29 testes verdes. Achados em `docs/decisions.md`.
 - [x] Semana 2 · transform + parquet + dashboard (23/ago/2026). 933.620 linhas em 108 partições Parquet, 38.916 linhas no agregado diário e 1.280 no mensal, dashboard com cinco abas, 56 testes verdes. A soma de horas faltantes do agregado bate exatamente com as 368 horas que a V4 reporta, por dois caminhos de código independentes. Falta o exercício de reescrita da agregação mensal.
-- [ ] Semana 3 · API + produção + lançamento
+- [x] Semana 3 · API + produção (23/ago/2026). Cliente da API com backoff, fatiamento e
+      conferência de cobertura; modo `--incremental` em caminho separado do histórico;
+      V7 reconciliando por cobertura e por divergência calibrada por subsistema e hora do
+      dia; duas abas novas no dashboard; agendador com dois ritmos. 92 testes verdes, sem
+      rede. Achados em `docs/decisions.md`.
+
+      A exploração da API rendeu mais que o previsto e mudou o desenho: as duas fontes não
+      medem a mesma coisa (a API conta geração distribuída, o arquivo não), então o dado
+      dela mora em tabela própria e a V7 reporta a divergência em vez de eleger vencedor.
+      Três defeitos não documentados da fonte viraram código: HTTP 200 para qualquer erro,
+      corte silencioso de janela acima de 103 dias e JSON inválido em datas antigas. E ela
+      guarda a hora que o arquivo perdia na volta do horário de verão, o que fecha o arco
+      que abriu na semana 1.
+
+- [ ] Lançamento: doc no Notion, repo público, post em carrossel

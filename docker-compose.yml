@@ -13,10 +13,14 @@ services:
       - dados:/dados
     environment:
       DATA_DIR: /dados
-      # De quantas em quantas horas reprocessar. O ONS revisa dados retroativamente,
-      # entao reprocessar tudo e' o desenho, nao desperdicio: o extract so re-baixa o
-      # ano cuja ETag mudou.
+      # De quantas em quantas horas reprocessar o historico inteiro. O ONS revisa dados
+      # retroativamente, entao reprocessar tudo e' o desenho, nao desperdicio: o extract
+      # so re-baixa o ano cuja ETag mudou.
       INTERVALO_HORAS: 12
+      # E de quantas em quantas horas buscar os dias recentes na API de Carga Verificada.
+      # Mais frequente porque a fonte muda mais: ela publica de meia em meia hora, e e'
+      # o que da' ao painel a dianteira de alguns dias sobre o arquivo anual.
+      INTERVALO_INCREMENTAL_HORAS: 3
     # O healthcheck da imagem pergunta ao Streamlit se ele esta de pe', e aqui nao ha
     # Streamlit nenhum: este servico roda o agendador. Sem desligar, o container fica
     # marcado unhealthy para sempre, e alarme que sempre toca ninguem escuta.

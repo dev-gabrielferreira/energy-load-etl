@@ -76,6 +76,82 @@ Documento vivo: decisão nova entra aqui no mesmo commit em que entra no código
 | Leitura do painel | só `processed/`, e o horário só numa tela | Quatro das cinco abas leem agregado pronto e abrem instantâneo. A aba de perfil do dia é a única que abre o Parquet horário, e o filtro de ano e subsistema vira poda de pasta no pyarrow: um arquivo de 8.760 linhas em vez dos 108 do dataset. |
 | Limite conhecido: dia vazio na borda | fica de fora do agregado | A janela sai do próprio dado. Dia vazio no meio aparece porque a janela passa por cima dele; dia vazio na primeira ou na última posição não, porque nada indica que deveria existir. Vale para a V4 pelo mesmo motivo. Os três dias vazios do ONS estão todos no meio do ano. Fixado em teste para não ser "consertado" por engano. |
 
+## Semana 3
+
+Decisões da fonte incremental. A exploração da API veio antes de qualquer linha de
+código, e mudou o desenho: as duas fontes não medem a mesma coisa.
+
+| Decisão | Escolha | Por quê, e o que foi rejeitado |
+|---|---|---|
+| Onde o dado da API mora | tabela própria, `processed/verificada/` | A API fica em média 5% acima do arquivo, com forma que varia ao longo do dia. Anexar na mesma tabela enfiaria um degrau estrutural numa série de 26 anos, e qualquer `groupby` que esquecesse de filtrar por fonte leria o degrau como fato. Rejeitado: coluna `fonte` na tabela horária. |
+| Grão de armazenamento | semi-horário, como chega | Agregar na entrada jogaria fora informação que a fonte deu de graça. A agregação para hora acontece só na hora de comparar. |
+| Coluna de medida | `val_cargaglobalcons` | É a consistida. Medido em 90 dias: `val_cargaglobalcons = val_cargaglobal + val_consistencia`, e só 4 registros em 4.320 tiveram correção. Usar a não consistida seria ignorar a correção que o próprio ONS aplicou. |
+| Vocabulário de área | mapa explícito, com o inverso derivado dele | A API chama o SE de `SECO`. Pedir `SE` não dá erro: devolve `[ ]`. Dois dicionários escritos à mão dessincronizariam num refactor, e o sintoma seria dado sumindo em silêncio. |
+| JSON malformado | reparado para `null`, com a contagem no relatório | A API devolve `"val_cargaglobalsmmgd": ,` em datas antigas, uns 100 por dia entre 2016 e 2019, sempre nos campos de geração distribuída, que não existia. `json.loads` recusa. Recusar o dia jogaria fora medição boa por causa de uma vírgula. Reparo silencioso é como um pipeline começa a mentir, então a contagem sobe para o relatório. |
+| Regex do reparo | exige aspas antes dos dois-pontos | `:\s*(?=,)` solto também casaria dentro de uma string de valor, e um campo com o texto `"cuidado: , aqui"` viraria `"cuidado: null aqui"`. Corromper dado bom para consertar dado ruim seria péssima troca. Tem teste. |
+| Corpo lido como texto | `resposta.text`, não `resposta.json()` | O `.json()` estoura no corpo malformado antes de haver chance de repará-lo. |
+| Tamanho da janela por chamada | 30 dias | Medido: uma resposta nunca traz mais de 4.944 registros (103 dias). Passando disso ela corta o **fim** da janela, devolve HTTP 200 e não avisa, ou seja, some justamente com os dias recentes que o modo incremental quer. 30 fica bem abaixo do teto. |
+| Conferência de cobertura | compara `dat_referencia` recebidos com os dias pedidos | Única defesa contra o corte silencioso. O teto foi medido, não documentado, então pode mudar amanhã sem aviso, e a conferência continua valendo se mudar. Verificado: pedindo 150 dias, ela acusa os 47 que faltaram. |
+| Validação de pedido | local, antes de sair da máquina | A API responde HTTP 200 com `[ ]` para área inválida, data inválida, intervalo invertido e ano sem dado. Sem as recusas locais, erro nosso viraria ausência de dado sem nada apontando a causa. |
+| Resposta vazia | anomalia, com status próprio | Não é erro nem sucesso. Depois das recusas locais, o único significado que sobra é "a fonte não tem esses dias", e isso merece linha no relatório em vez de virar DataFrame vazio que ninguém nota. |
+| Retentativa | backoff exponencial com jitter, só em timeout, erro de conexão e 5xx | 4xx é problema do nosso pedido, e repetir o mesmo pedido errado não conserta nada. Resposta vazia também não se repete: o servidor devolveria a mesma coisa. O jitter existe porque, sem ele, todo cliente que caiu junto volta junto e a segunda onda derruba o servidor que estava se levantando. |
+| Detalhe do erro no relatório | truncado em 140 caracteres | O `requests` aninha a exceção original na dele, e a mensagem passa de 400 caracteres com a URL repetida. Quatro janelas com erro deixavam o relatório ilegível, e relatório que ninguém lê não diagnostica nada. |
+| Normalização na entrada | nomes de coluna do arquivo anual | Depois do `api_client`, o dado da API tem `id_subsistema`, `din_instante_local` e `val_cargaenergiahomwmed`, e as validações de linha do pipeline rodam sobre ele sem uma alteração. É o que "as duas fontes passam pelo mesmo funil" quer dizer na prática. |
+| V6 na API | fica de fora | Os limiares foram medidos em saltos de uma hora. Meia hora tem metade do tempo para a carga variar, então o mesmo piso acusaria degrau onde não há. Seria erro de calibragem nosso, não problema no dado. |
+| Grade da V4 | ganhou parâmetro `freq` | A mesma pergunta ("quais instantes existiram no relógio") serve às duas fontes, mudando só o passo. Duas implementações um dia divergiriam, e aí o relatório de buracos de uma fonte contradiria o da outra. |
+| Alinhamento semi-horário para horário | recua 30 minutos, depois arredonda | A API carimba o **fim** do intervalo e o arquivo carimba o início. Sem o recuo, a série inteira sairia deslocada em uma hora com aparência de normalidade. |
+| Onde arredondar | em UTC, nunca no horário local | `din_instante_local.dt.floor("h")` levanta `AmbiguousTimeError` na volta do horário de verão, porque o horário de parede 23:00 aconteceu duas vezes. Em UTC não há ambiguidade, e o resultado é o mesmo enquanto o fuso for de hora cheia, o que sempre foi o caso do Brasil. Fica o alerta para fuso de meia hora, como o da Índia. |
+| Hora incompleta da API | entra declarando `meias_horas` e `completo` | Mesma linha do agregado diário e mensal. Comparar a média de meia hora com a média de uma hora inteira acusaria divergência que é nossa, não do dado, então hora incompleta nunca é marcada como atípica. |
+| V7, o que ela decide | nada: reporta divergência e marca cobertura | Não existe fonte vencedora, e isso é conclusão, não omissão. As duas medem coisas diferentes. A pergunta "quem está certo" é a errada; a útil é "as duas contam a mesma história sobre esta hora". |
+| V7, janela | sobreposição das duas fontes, não união | Sem o recorte, as 26 horas do arquivo anteriores à série da API sairiam todas como "só no arquivo", e o achado real afogaria em 900 mil linhas de ruído. Preço aceito: buraco exatamente na ponta não aparece na V7, e quem cuida disso é a conferência de cobertura do cliente. Tem teste fixando o comportamento. |
+| V7, limiar | faixa medida por subsistema **e** por hora do dia | Medido: com faixa única por subsistema, 100% das marcações caíam entre 7h e 14h, ou seja, a regra estava medindo o sol e não anomalia. Com faixa por hora, as marcações ficam uniformes ao longo do dia. Rejeitados: faixa fixa generosa (marcava 0,12%, tudo ao meio-dia) e resíduo contra o perfil da própria janela (ruidoso, resíduo p99 de 11 pontos percentuais). |
+| V7, calibragem | percentis 0,5 e 99,5 sobre um ano inteiro | 35.040 horas de sobreposição, 8.760 por subsistema, agosto de 2025 a agosto de 2026. Um ano e não três meses porque a divergência acompanha o sol, e verão e inverno têm perfis diferentes. Marca 1,10% no próprio dado da calibragem. |
+| V7, envelhecimento | a taxa da calibragem fica no `config`, e o relatório compara | Única regra do projeto que envelhece: geração distribuída cresce todo ano e a divergência cresce junto, então faixa medida hoje fica apertada amanhã. Se a taxa de marcação disparar, o relatório diz "a régua ficou velha", não "o dado piorou". Regra calibrada que não sabe dizer quando precisa ser remedida vira alarme que ninguém escuta. |
+| Escrita da tabela verificada | apaga a tabela inteira antes de escrever | Ela é uma janela móvel dos últimos dias, não um histórico que cresce. Torna a escrita idempotente e deixa claro que a cobertura dela é a da janela pedida. Acumular a série da API seria leitura mais merge por (subsistema, instante): decisão diferente, com custo diferente, e não está tomada. |
+| Tabela vazia com tipos | `vazio_verificada()` fixa os dtypes, com precisão de microssegundo | Sem os tipos, um `.dt.year` sobre a tabela vazia quebraria só no dia em que a API estivesse fora, que é o pior dia para descobrir. A precisão é `us` e não `ns` porque é o que o `pd.to_datetime` devolve: com `ns`, concatenar rebaixaria o dado real e o Parquet sairia com um schema no dia em que a janela veio vazia e outro no dia em que veio cheia. |
+| Modo incremental | função e flag separadas, sem `try/except` em volta da API | `executar` não chama a API em lugar nenhum. Um `try/except` garantiria que a exceção não escapa; caminhos separados garantem que ela não existe no fluxo histórico. Verificado apontando a URL para um host inexistente: o incremental falhou em 5,4s sem exceção e os anos de 2024 e 2025 processaram normalmente. |
+| Reconciliação lê o Parquet | não o CSV bruto | O que a API reconcilia é o dado que passou pela validação e foi publicado, não o texto que o ONS mandou. Mesma regra que o dashboard segue. Parquet ausente não é erro: na primeira subida o histórico ainda não rodou. |
+| API sem retorno | mantém a tabela anterior | Apagar deixaria o painel sem a aba de últimos dias por uma indisponibilidade passageira. Dado de ontem rotulado com a data de ontem é melhor que tela vazia, e quem diz que a busca falhou é o relatório. |
+| Relatório do incremental | arquivo próprio, `relatorio_api.md` | Os dois modos rodam em cadências diferentes em produção, e um sobrescrever o relatório do outro faria o painel mostrar sempre o da última execução, seja qual tenha sido. |
+| Tabelas da API no dashboard | opcionais | Ausência delas não derruba a página: as duas abas novas explicam que faltam dados e o resto continua inteiro. Um painel que só sobe quando a API respondeu jogaria fora a separação entre os fluxos no último metro. |
+| Ritmo em produção | completa a cada 12h, incremental a cada 3h | As fontes mudam em cadências diferentes: os arquivos anuais são republicados às 12h e às 19h, e a API publica de meia em meia hora. Tratar as duas igual seria desperdício e falta de educação com o ONS. |
+| Testes da API | sem rede, com recortes reais | Todo corpo de resposta nos testes foi copiado da API antes de virar fixture. Verificado rodando a suíte com `socket.connect` bloqueado. |
+
+## O que a API desmentiu e revelou
+
+Tudo medido em 23/08/2026, contra a API real e contra o Parquet local.
+
+- **Os códigos de área não são os do arquivo.** São `N`, `NE`, `S` e `SECO`. Pedir `SE`
+  devolve `[ ]`, sem erro nenhum.
+- **A API responde HTTP 200 para tudo.** Área inválida, data inválida, intervalo
+  invertido e ano sem dado: todos 200 com lista vazia. Não existe sinalização de erro.
+- **Teto silencioso de 4.944 registros, e ela corta o fim.** Pedindo 150 dias vieram os
+  103 primeiros, e os 47 dias mais recentes sumiram sem aviso, que é exatamente a parte
+  que o modo incremental quer.
+- **JSON inválido em datas antigas.** `"val_cargaglobalsmmgd": ,` sem valor, cerca de
+  100 por dia entre 2016 e 2019, sempre nos campos de geração distribuída.
+- **A série começa em 2016-01-01.** Antes disso a resposta vem vazia.
+- **A API pré-cria as 48 meias-horas do dia e preenche com zero as que ainda não
+  aconteceram.** Descoberto pela V5, sem ninguém procurar: numa execução às 22h, as
+  meias-horas de 22:30 a 24:00 dos quatro subsistemas vieram com `0.0`. É a mesma
+  mentira que o arquivo anual conta com `0E-8`, em outro formato. Quem somasse o dia
+  corrente sem a faixa física dividiria por 48 medições tendo medido menos, todo dia,
+  sem sintoma nenhum.
+- **A API guarda a hora que o arquivo perdeu.** Chaveada em UTC, ela não tem o problema
+  do formato do ONS. Em 17/02/2018 e 16/02/2019 o dia vem com 50 registros, com as duas
+  ocorrências das 23:00 carimbadas `-02:00` e `-03:00`. A V7 recuperou 37.797,471 MWmed
+  às 23:00 de 17/02/2018, uma medição real que não existe no arquivo anual. Em 2016 e
+  2017 o dia vem com 48: nesses dois anos a hora extra se perdeu na API também.
+- **As duas fontes divergem, e a divergência tem estrutura.** Em 35.040 horas de
+  sobreposição a API fica acima do arquivo em média 5,0% no SE, 4,3% no NE, 2,7% no S e
+  1,4% no N. A diferença tem duas partes somadas: uma constante, que continua lá de
+  madrugada com o sol posto, e uma que varia ao longo do dia, com vale de manhã cedo e
+  pico à tarde. A segunda acompanha a geração em telhado com painel solar, que não passa
+  pela rede: o arquivo anual não a enxerga e a API a estima e soma.
+- **O Norte fica negativo boa parte do dia**, ou seja, ali a API mede menos que o
+  arquivo. Geração distribuída não explica isso. Fica como pergunta em aberto, do lado
+  de abril de 2020, e não como conclusão.
+
 ## Deploy
 
 | Decisão | Escolha | Por quê, e o que foi rejeitado |

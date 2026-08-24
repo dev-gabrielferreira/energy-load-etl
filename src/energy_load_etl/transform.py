@@ -50,14 +50,20 @@ INICIO_PRIMAVERA = 923
 INICIO_VERAO = 1221
 
 
-def grade_local(inicio, fim) -> pd.DatetimeIndex:
-    """Todas as horas que existiram no relogio brasileiro entre dois instantes.
+def grade_local(inicio, fim, freq: str = "h") -> pd.DatetimeIndex:
+    """Todos os instantes que existiram no relogio brasileiro entre dois pontos.
 
     Um dia de entrada do horario de verao devolve 23 horas, um da volta devolve 25, e
     nenhuma data de horario de verao aparece no codigo: quem sabe disso e' o zoneinfo.
     E' por isso que nada neste projeto conta linha para saber se falta hora.
+
+    O passo e' parametro porque as duas fontes tem grao diferente: o arquivo anual e'
+    horario e a API de Carga Verificada e' semi-horaria. A pergunta e' a mesma nos dois
+    casos, entao a funcao e' uma so'. Duas implementacoes da mesma pergunta acabariam
+    dando respostas diferentes sobre o mesmo dia, e ai' o relatorio de buracos de uma
+    fonte contradiria o da outra.
     """
-    return pd.date_range(inicio, fim, freq="h", tz=config.FUSO)
+    return pd.date_range(inicio, fim, freq=freq, tz=config.FUSO)
 
 
 def _tabela_feriados(anos: Iterable[int]) -> dict:

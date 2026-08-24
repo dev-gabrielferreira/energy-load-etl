@@ -253,3 +253,143 @@ def test_v6_marca_o_apagao_de_2009():
     marcada = df[df["salto_suspeito"]]
     assert len(marcada) == 1
     assert marcada.iloc[0]["salto_mwmed"] < -19000
+
+
+# --- V7: reconciliacao API x arquivo ------------------------------------------
+#
+# A V7 nao tem vencedor, e isso e' conclusao e nao omissao: a API conta geracao
+# distribuida e o arquivo anual nao, entao as duas divergem por construcao. O que ela
+# marca sem ambiguidade e' cobertura, que nao depende de limiar nenhum.
+
+
+def _fonte(instantes, valores, subsistema="SE", completo=True):
+    """Monta uma das duas pontas da V7, no formato minimo que ela consome."""
+    df = pd.DataFrame(
+        {
+            "id_subsistema": subsistema,
+            "din_instante_local": pd.to_datetime(instantes).tz_localize(
+                "America/Sao_Paulo", ambiguous=True
+            ),
+            "val_cargaenergiahomwmed": valores,
+        }
+    )
+    df["completo"] = completo
+    return df
+
+
+HORAS_DE_TESTE = ["2026-06-01 12:00", "2026-06-01 13:00", "2026-06-01 14:00"]
+
+
+def test_v7_marca_confere_quando_a_divergencia_esta_na_faixa():
+    """+5% as 12h no SE esta dentro do que a geracao distribuida explica."""
+    arquivo = _fonte(HORAS_DE_TESTE, [20000.0, 20000.0, 20000.0])
+    api = _fonte(HORAS_DE_TESTE, [21000.0, 21000.0, 21000.0])
+    rec = validate.v7_reconciliacao(arquivo, api)
+    assert set(rec["motivo"]) == {"confere"}
+    assert rec["divergencia_pct"].round(1).tolist() == [5.0, 5.0, 5.0]
+
+
+def test_v7_marca_atipica_acima_da_faixa():
+    arquivo = _fonte(HORAS_DE_TESTE, [20000.0, 20000.0, 20000.0])
+    api = _fonte(HORAS_DE_TESTE, [21000.0, 30000.0, 21000.0])  # +50% as 13h
+    rec = validate.v7_reconciliacao(arquivo, api)
+    atipicas = rec[rec["motivo"] == "divergencia_atipica"]
+    assert len(atipicas) == 1
+    assert atipicas.iloc[0]["din_instante_local"].hour == 13
+
+
+def test_v7_usa_faixa_diferente_por_hora_do_dia():
+    """A mesma divergencia e' normal ao meio-dia e atipica de madrugada.
+
+    E' o que separa a regra de medir o sol: com faixa unica por subsistema, 100% das
+    marcacoes cairiam entre 7h e 14h.
+    """
+    horas_ = ["2026-06-01 03:00", "2026-06-01 13:00"]
+    arquivo = _fonte(horas_, [20000.0, 20000.0])
+    api = _fonte(horas_, [22400.0, 22400.0])  # +12% nas duas
+    rec = validate.v7_reconciliacao(arquivo, api).set_index("hora")
+    assert rec.loc[3, "motivo"] == "divergencia_atipica"  # faixa das 03h no SE vai ate 7,5%
+    assert rec.loc[13, "motivo"] == "confere"  # a das 13h vai ate 15,9%
+
+
+def test_v7_nao_marca_hora_incompleta():
+    """Media de meia hora contra media de uma hora acusaria divergencia nossa, nao do dado."""
+    arquivo = _fonte(HORAS_DE_TESTE, [20000.0, 20000.0, 20000.0])
+    api = _fonte(HORAS_DE_TESTE, [21000.0, 30000.0, 21000.0], completo=False)
+    rec = validate.v7_reconciliacao(arquivo, api)
+    assert "divergencia_atipica" not in set(rec["motivo"])
+
+
+def test_v7_acha_a_hora_que_so_a_api_tem():
+    """A volta do horario de verao: o arquivo guardou uma das 23:00, a API guardou as duas."""
+    # As duas fontes seguem ate 00:00 do dia seguinte, senao a hora recuperada cairia na
+    # borda da sobreposicao e o recorte a excluiria antes da comparacao.
+    arquivo = pd.DataFrame(
+        {
+            "id_subsistema": "SE",
+            "din_instante_local": pd.to_datetime(
+                ["2018-02-17 22:00", "2018-02-17 23:00", "2018-02-18 00:00"]
+            ).tz_localize("America/Sao_Paulo", ambiguous=[True, True, True]),
+            "val_cargaenergiahomwmed": [40000.0, 38000.0, 37000.0],
+        }
+    )
+    api = pd.DataFrame(
+        {
+            "id_subsistema": "SE",
+            "din_instante_local": pd.to_datetime(
+                ["2018-02-17 22:00", "2018-02-17 23:00", "2018-02-17 23:00", "2018-02-18 00:00"]
+            ).tz_localize("America/Sao_Paulo", ambiguous=[True, True, False, True]),
+            "val_cargaenergiahomwmed": [40100.0, 38100.0, 37800.0, 37100.0],
+            "completo": True,
+        }
+    )
+    rec = validate.v7_reconciliacao(arquivo, api)
+    so_na_api = rec[rec["motivo"] == "so_na_api"]
+    assert len(so_na_api) == 1
+    recuperada = so_na_api.iloc[0]
+    assert recuperada["din_instante_local"].utcoffset().total_seconds() / 3600 == -3
+    assert recuperada["val_api"] == 37800.0
+    assert pd.isna(recuperada["val_arquivo"])
+
+
+def test_v7_acha_a_hora_que_so_o_arquivo_tem():
+    """O buraco precisa estar no meio: a hora do arquivo que a API perdeu no caminho."""
+    arquivo = _fonte(HORAS_DE_TESTE, [20000.0, 20000.0, 20000.0])
+    api = _fonte([HORAS_DE_TESTE[0], HORAS_DE_TESTE[2]], [21000.0, 21000.0])
+    rec = validate.v7_reconciliacao(arquivo, api)
+    so_no_arquivo = rec[rec["motivo"] == "so_no_arquivo"]
+    assert len(so_no_arquivo) == 1
+    assert so_no_arquivo.iloc[0]["din_instante_local"].hour == 13
+
+
+def test_v7_ignora_a_ponta_que_so_uma_fonte_alcanca():
+    """Comportamento de borda, deliberado: a sobreposicao recorta antes de comparar.
+
+    A API e' uns dias mais fresca que o arquivo anual. Sem este recorte, toda execucao
+    acusaria como "so na API" as horas que o ONS simplesmente ainda nao publicou, e o
+    relatorio de cobertura viraria ruido diario. O preco e' que buraco exatamente na
+    ponta nao aparece aqui; quem cuida disso e' a conferencia de cobertura do cliente,
+    que compara com a janela pedida e nao com a outra fonte.
+    """
+    arquivo = _fonte(HORAS_DE_TESTE, [20000.0, 20000.0, 20000.0])
+    api = _fonte(HORAS_DE_TESTE[:2], [21000.0, 21000.0])
+    rec = validate.v7_reconciliacao(arquivo, api)
+    assert len(rec) == 2
+    assert "so_no_arquivo" not in set(rec["motivo"])
+
+
+def test_v7_compara_so_a_sobreposicao():
+    """Sem o recorte, as 26 horas do arquivo anteriores a' API virariam ruido no relatorio."""
+    arquivo = _fonte(
+        ["2020-01-01 00:00", "2026-06-01 12:00", "2026-06-01 13:00"], [20000.0] * 3
+    )
+    api = _fonte(["2026-06-01 12:00", "2026-06-01 13:00"], [21000.0, 21000.0])
+    rec = validate.v7_reconciliacao(arquivo, api)
+    assert len(rec) == 2
+    assert "so_no_arquivo" not in set(rec["motivo"])
+
+
+def test_v7_sem_sobreposicao_devolve_tabela_vazia():
+    arquivo = _fonte(["2020-01-01 00:00"], [20000.0])
+    api = _fonte(["2026-06-01 12:00"], [21000.0])
+    assert len(validate.v7_reconciliacao(arquivo, api)) == 0

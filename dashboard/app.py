@@ -229,6 +229,28 @@ def ler_horas(ano: int, subsistema: str) -> pd.DataFrame:
     return load.ler_horario(anos=[ano], subsistemas=[subsistema])
 
 
+@st.cache_data(ttl=VALIDADE_DO_CACHE)
+def ler_api() -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """As tabelas do modo incremental, ou None quando ele ainda nao rodou.
+
+    Ausencia aqui nao pode derrubar a pagina. O fluxo historico e o incremental sao
+    independentes de proposito, e um painel que so' sobe quando a API respondeu jogaria
+    fora essa separacao no ultimo metro.
+    """
+    try:
+        return load.ler_verificada(), load.ler_agregado(load.RECONCILIACAO)
+    except (FileNotFoundError, OSError):
+        return None, None
+
+
+def sem_dado_da_api() -> None:
+    st.info(
+        "Esta tela usa a API de Carga Verificada do ONS, que ainda não foi consultada. "
+        "Rode `python -m energy_load_etl.pipeline --incremental` para preenchê-la. "
+        "As outras abas não dependem dela."
+    )
+
+
 def tipo_de_dia(df: pd.DataFrame) -> pd.Series:
     """Dia util, fim de semana ou feriado.
 
@@ -438,14 +460,18 @@ with st.expander("O que significa cada termo"):
         unsafe_allow_html=True,
     )
 
-geral, explorar, subsistemas, perfil, sazonalidade, dado = st.tabs(
+verificada, reconciliacao = ler_api()
+
+geral, recentes, explorar, subsistemas, perfil, sazonalidade, dado, fontes = st.tabs(
     [
         "Visão geral",
+        "Últimos dias",
         "Explorar",
         "Subsistemas",
         "Perfil do dia",
         "Sazonalidade",
         "Qualidade do dado",
+        "As duas fontes",
     ]
 )
 
@@ -513,6 +539,122 @@ with geral:
         f"{numero(sin['carga_media_mwmed'].iloc[-1])} MWmed no último mês medido. A "
         "queda visível em 2001 é o racionamento, e a de 2020 é a pandemia."
     )
+
+# --- ultimos dias -------------------------------------------------------------
+
+with recentes:
+    st.subheader("O consumo de meia em meia hora")
+
+    if verificada is None or verificada.empty:
+        sem_dado_da_api()
+    else:
+        ultimo = verificada["din_instante_local"].max()
+        fim_do_arquivo = pd.Timestamp(diario["data"].max())
+        dianteira = (ultimo.tz_localize(None).normalize() - fim_do_arquivo).days
+
+        nota(
+            "As outras abas leem os arquivos anuais do ONS, que saem com alguns dias de "
+            "atraso. Esta lê a <strong>API de Carga Verificada</strong>, que publica de "
+            "meia em meia hora. É a mesma rede medida por dois caminhos diferentes, e os "
+            "números não batem exatamente: a API contabiliza a energia gerada em telhado "
+            "com painel solar, que não aparece no arquivo anual. A aba "
+            "<em>As duas fontes</em> mostra essa diferença."
+        )
+
+        indicadores = st.columns(3)
+        indicadores[0].metric(
+            "Última medição",
+            f"{ultimo:%d/%m %H:%M}",
+            help="Hora local de Brasília, no fim do intervalo de meia hora medido.",
+            border=True,
+        )
+        indicadores[1].metric(
+            "Dianteira sobre o arquivo",
+            f"{dianteira} dia{'s' if dianteira != 1 else ''}",
+            help=(
+                f"O arquivo anual vai até {fim_do_arquivo:%d/%m/%Y}. É essa diferença "
+                "que justifica o pipeline ter uma segunda fonte."
+            ),
+            border=True,
+        )
+        indicadores[2].metric(
+            "Medições no período",
+            numero(len(verificada)),
+            help="Duas por hora, para cada um dos quatro subsistemas.",
+            border=True,
+        )
+
+        filtros = st.columns([1.6, 2.4, 1.4])
+        dias_limite = min(14, verificada["din_instante_local"].dt.date.nunique())
+        dias = filtros[0].slider("Últimos dias", 1, dias_limite, min(7, dias_limite))
+        escolhidos_api = filtros[1].multiselect(
+            "Subsistemas",
+            options=list(SUBSISTEMAS),
+            default=list(SUBSISTEMAS),
+            format_func=lambda s: NOMES[s],
+            key="subs_api",
+        )
+        somar_api = filtros[2].toggle("Somar tudo como SIN", value=False, key="somar_api")
+
+        corte = ultimo - pd.Timedelta(days=dias)
+        janela = verificada[
+            (verificada["din_instante_local"] > corte)
+            & verificada["id_subsistema"].isin(escolhidos_api)
+        ]
+
+        if janela.empty:
+            st.info("Nada para mostrar. Marque ao menos um subsistema.")
+        else:
+            figura = go.Figure()
+            if somar_api:
+                # A soma só faz sentido nos instantes em que os quatro estão presentes.
+                # Sem isso, uma meia-hora que faltou num subsistema viraria um degrau
+                # para baixo no total do país, que não aconteceu.
+                juntos = janela.groupby("din_instante_local")["val_cargaenergiahomwmed"].agg(
+                    ["sum", "size"]
+                )
+                juntos = juntos[juntos["size"] == len(escolhidos_api)]
+                figura.add_trace(
+                    go.Scatter(
+                        x=juntos.index,
+                        y=juntos["sum"],
+                        mode="lines",
+                        name="SIN",
+                        line=dict(color=CORES["SE"], width=2),
+                        hovertemplate=dica("Brasil", "MWmed", CORES_TOOLTIP["SE"]),
+                    )
+                )
+            else:
+                for sub in SUBSISTEMAS:
+                    parte = janela[janela["id_subsistema"] == sub]
+                    if parte.empty:
+                        continue
+                    figura.add_trace(
+                        go.Scatter(
+                            x=parte["din_instante_local"],
+                            y=parte["val_cargaenergiahomwmed"],
+                            mode="lines",
+                            name=NOMES[sub],
+                            line=dict(color=CORES[sub], width=2),
+                            hovertemplate=dica(NOMES[sub], "MWmed", CORES_TOOLTIP[sub]),
+                        )
+                    )
+
+            figura.update_xaxes(hoverformat="%d/%m %H:%M")
+            figura.update_yaxes(title_text="MWmed")
+            grafico(
+                figura,
+                altura=440,
+                rotular=not somar_api and len(escolhidos_api) > 1,
+                legenda=f"Carga a cada meia hora nos últimos {dias} dias.",
+            )
+
+            nota(
+                "O desenho de dente de serra é o dia: vale de madrugada, subida pela "
+                "manhã, pico no fim da tarde. Em meia em meia hora dá para ver a rampa "
+                "do fim do dia, que na média horária das outras abas fica suavizada."
+            )
+
 
 # --- explorar -----------------------------------------------------------------
 
@@ -880,6 +1022,139 @@ with dado:
         "todo ano, e são os três dias inteiros em que ninguém mediu nada. Quatro horas "
         "faltantes por ano até 2019 é o esperado, não um problema."
     )
+
+# --- as duas fontes -----------------------------------------------------------
+
+with fontes:
+    st.subheader("A mesma rede, medida por dois caminhos")
+
+    if reconciliacao is None or reconciliacao.empty:
+        sem_dado_da_api()
+    else:
+        comparadas = reconciliacao[reconciliacao["motivo"].isin(["confere", "divergencia_atipica"])]
+        so_na_api = int((reconciliacao["motivo"] == "so_na_api").sum())
+        so_no_arquivo = int((reconciliacao["motivo"] == "so_no_arquivo").sum())
+
+        nota(
+            "O pipeline lê duas fontes do ONS: os arquivos anuais e a API de Carga "
+            "Verificada. Quando as duas cobrem a mesma hora, o valor é comparado. "
+            "<strong>Elas divergem, e a divergência tem forma.</strong> Não é erro de "
+            "medição nem de cálculo: são duas definições diferentes da mesma palavra."
+        )
+
+        indicadores = st.columns(3)
+        indicadores[0].metric("Horas comparadas", numero(len(comparadas)), border=True)
+        indicadores[1].metric(
+            "Fora da faixa esperada",
+            f"{(comparadas['motivo'] == 'divergencia_atipica').mean() * 100:.2f}%",
+            help=(
+                "A faixa é medida por subsistema e por hora do dia, sobre um ano de "
+                "sobreposição. Faixa única por subsistema marcaria só o meio-dia, que "
+                "é quando a diferença estrutural é maior."
+            ),
+            border=True,
+        )
+        indicadores[2].metric(
+            "Horas em só uma das fontes",
+            numero(so_na_api + so_no_arquivo),
+            help=(
+                f"{so_na_api} só na API, {so_no_arquivo} só no arquivo. Este é o número "
+                "que não precisa de limiar nenhum: ou a hora está lá, ou não está."
+            ),
+            border=True,
+        )
+
+        st.subheader("A diferença segue o sol")
+        perfil_hora = (
+            comparadas.groupby(["id_subsistema", "hora"])["divergencia_pct"].mean().reset_index()
+        )
+        perfil_hora["relogio"] = perfil_hora["hora"].map(RELOGIO.__getitem__)
+
+        figura = go.Figure()
+        for sub in SUBSISTEMAS:
+            parte = perfil_hora[perfil_hora["id_subsistema"] == sub]
+            if parte.empty:
+                continue
+            figura.add_trace(
+                go.Scatter(
+                    x=parte["relogio"],
+                    y=parte["divergencia_pct"],
+                    mode="lines+markers",
+                    name=NOMES[sub],
+                    line=dict(color=CORES[sub], width=2),
+                    marker=dict(size=7),
+                    hovertemplate=(
+                        f'<span style="color:{CORES_TOOLTIP[sub]}"><b>{NOMES[sub]}</b>'
+                        "   %{y:+.1f}%</span><extra></extra>"
+                    ),
+                )
+            )
+        # A linha do zero é a referência de leitura: acima dela a API mede mais que o
+        # arquivo, abaixo mede menos. Sem ela o gráfico vira um emaranhado de curvas.
+        figura.add_hline(y=0, line_width=1, line_dash="dot", line_color=TINTA_EIXO)
+        figura.update_xaxes(
+            title_text="hora do dia",
+            type="category",
+            categoryorder="array",
+            categoryarray=RELOGIO,
+            tickmode="array",
+            tickvals=RELOGIO[::3],
+        )
+        figura.update_yaxes(title_text="quanto a API mede a mais (%)")
+        grafico(
+            figura,
+            altura=430,
+            legenda="Diferença média entre a API e o arquivo anual, por hora do dia.",
+        )
+
+        # Amplitude e o que varia ao longo do dia, separado do nivel, que e' o que a
+        # diferenca vale mesmo de madrugada. Sao duas coisas distintas e o texto abaixo
+        # trata cada uma pelo que ela e', em vez de chamar tudo de "curva solar".
+        # O exemplo sai do subsistema de maior pico, e nao do de maior amplitude. O Norte
+        # tem a maior amplitude porque atravessa o zero, o que e' outro fenomeno, e
+        # usa-lo aqui contaria a historia errada.
+        maior = perfil_hora.loc[perfil_hora["divergencia_pct"].idxmax()]
+        do_campeao = perfil_hora[perfil_hora["id_subsistema"] == maior["id_subsistema"]]
+        menor = do_campeao.loc[do_campeao["divergencia_pct"].idxmin()]
+        negativos = sorted(
+            perfil_hora.loc[perfil_hora["divergencia_pct"] < 0, "id_subsistema"].unique()
+        )
+
+        nota(
+            "A diferença tem <strong>duas partes, e elas têm causas diferentes</strong>. "
+            "Uma é constante e continua lá de madrugada, com o sol posto. A outra varia ao "
+            f"longo do dia: no {NOMES[maior['id_subsistema']]} ela vai de "
+            f"{menor['divergencia_pct']:+.1f}% às {menor['relogio']} a "
+            f"{maior['divergencia_pct']:+.1f}% às {maior['relogio']}, com o vale de manhã "
+            "cedo e o pico à tarde. Essa parte que se move acompanha a geração em telhado "
+            "com painel solar, a chamada geração distribuída: ela não passa pela rede, "
+            "então o arquivo anual não a enxerga, e a API a estima e soma."
+            + (
+                "<br><br>O <strong>"
+                + ", ".join(NOMES[s] for s in negativos)
+                + "</strong> passa boa parte do dia abaixo de zero, ou seja, ali a API "
+                "mede <em>menos</em> que o arquivo. Geração distribuída não explica isso, "
+                "e a causa fica registrada como pergunta em aberto, não como conclusão."
+                if negativos
+                else ""
+            )
+        )
+
+        st.subheader("Diferença média por subsistema")
+        media_sub = comparadas.groupby("id_subsistema")["divergencia_pct"].mean()
+        colunas = st.columns(len(SUBSISTEMAS))
+        for coluna, sub in zip(colunas, SUBSISTEMAS):
+            if sub in media_sub.index:
+                coluna.metric(NOMES[sub], f"{media_sub[sub]:+.2f}%", border=True)
+
+        nota(
+            "Nenhuma das duas fontes está errada, e o pipeline não escolhe uma vencedora. "
+            "Elas respondem perguntas diferentes: o arquivo anual diz quanta energia "
+            "passou pela rede, e a API diz quanta energia foi consumida. As duas ficam "
+            "guardadas em tabelas separadas, e é essa separação que impede que 26 anos de "
+            "série histórica ganhem um degrau de 5% no dia em que a segunda fonte entrou."
+        )
+
 
 st.divider()
 st.caption(

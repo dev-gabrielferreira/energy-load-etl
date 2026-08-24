@@ -10,8 +10,13 @@ dashboard em produção.
 [English version](README.md)
 
 933.880 medições horárias publicadas pelo ONS, baixadas com invalidação de cache,
-passadas por seis regras de validação, gravadas em Parquet particionado e servidas por um
-dashboard Streamlit que se atualiza sozinho duas vezes por dia.
+passadas por sete regras de validação, gravadas em Parquet particionado e servidas por um
+dashboard Streamlit.
+
+São duas fontes. Os arquivos anuais em CSV são o histórico, e chegam com alguns dias de
+atraso. Uma API REST de medições semi-horárias cobre esse buraco e é buscada a cada três
+horas. As duas passam pelo mesmo funil de validação e ficam em tabelas separadas, porque
+descobrimos que elas não medem a mesma coisa.
 
 O que não passa na validação não some em silêncio. Vai para um relatório de qualidade com
 a regra que pegou, o motivo, e a linha do arquivo de onde veio.
@@ -29,24 +34,34 @@ Só que não é, e o motivo está nos timestamps. É disso que este projeto trat
 ```mermaid
 flowchart LR
     ONS[("Dados abertos do ONS<br/>27 CSVs anuais")] --> E[extract<br/>cache por ETag]
+    API[("API Carga Verificada<br/>semi-horária, UTC")] --> C[api_client<br/>retry, fatia, confere cobertura]
     E --> V{validate<br/>V1 a V6}
+    C --> V
     V -->|passa| T[transform<br/>calendário]
     V -->|falha| R[("data/rejected<br/>regra, motivo, linha")]
     T --> L[load]
     L --> P[("Parquet<br/>ano / subsistema")]
     L --> A[("agregados<br/>diário e mensal")]
+    L --> H[("semi-horário<br/>da API")]
+    P --> W{V7<br/>reconcilia}
+    H --> W
+    W --> RC[("divergência<br/>por hora")]
     P --> D[Dashboard Streamlit]
     A --> D
+    H --> D
+    RC --> D
 ```
 
-Um comando roda tudo:
+Dois comandos, um por fonte:
 
 ```bash
-uv run python -m energy_load_etl.pipeline
+uv run python -m energy_load_etl.pipeline                # os 27 arquivos anuais
+uv run python -m energy_load_etl.pipeline --incremental  # os últimos 30 dias, via API
 ```
 
-Leva uns 6 segundos para os 27 anos com os arquivos em cache, e grava 933.620 linhas
-aprovadas em 108 partições Parquet.
+A passada completa leva uns 6 segundos para os 27 anos com os arquivos em cache, e grava
+933.620 linhas aprovadas em 108 partições Parquet. A incremental leva uns segundos e não
+toca no histórico.
 
 ## A parte interessante
 
@@ -77,6 +92,66 @@ verão aparece no código, e a mesma função responde tanto "faltou alguma hora
 "esse dia está inteiro?". Dois caminhos de código independentes, um número só: as horas
 faltantes somadas no agregado diário dão 368, e a validação reporta 368.
 
+## A segunda fonte, e o que custa confiar nela
+
+A API de Carga Verificada quase não tem documentação, então a primeira coisa foi ir lá
+descobrir. Cada linha abaixo foi medida contra a API real, e todas mudaram o código.
+
+**Ela responde HTTP 200 para tudo.** Área desconhecida, data inválida, intervalo
+invertido, ano sem dado: todos devolvem `200` com `[ ]`. Não existe sinalização de erro
+nenhuma, o que significa que um engano nosso vira dado faltando sem nada apontando a
+causa. Por isso todo pedido é conferido localmente antes de sair da máquina, e resposta
+vazia é tratada como anomalia a reportar, nunca como sucesso.
+
+**Ela corta janela longa em silêncio.** Uma resposta nunca traz mais de 4.944 registros,
+que são 103 dias de meias-horas. Pedindo mais, ela devolve `200` com o **fim** da janela
+cortado fora, que é exatamente a parte recente que uma carga incremental quer. Pedindo 150
+dias vieram os 103 primeiros e os 47 últimos sumiram sem uma palavra. O cliente fatia todo
+pedido em 30 dias e depois compara as datas que voltaram com as datas que foram pedidas.
+Essa conferência é a única coisa entre este pipeline e meses de dado calado pela metade.
+
+**O JSON dela é inválido em datas antigas.** `"val_cargaglobalsmmgd": ,` sem valor nenhum,
+uns cem por dia entre 2016 e 2019, sempre nos campos de geração distribuída, que ainda não
+existia. O `json.loads` recusa, então o `resposta.json()` nunca é usado: o corpo é lido
+como texto, o campo vazio vira `null`, e a contagem de reparos sobe para o relatório de
+qualidade. Consertar dado dos outros em silêncio é como um pipeline começa a mentir.
+
+**Ela enche o futuro de zero.** A API pré-cria as 48 meias-horas do dia corrente e
+preenche com `0.0` as que ainda não aconteceram. Ninguém foi procurar isso: a V5 pegou na
+primeira execução de verdade, às 22h, rejeitando as fatias de 22:30 à meia-noite dos
+quatro subsistemas. É a mesma mentira que o arquivo anual conta com `0E-8`, em outro
+formato. Quem tirar a média do dia corrente sem regra de faixa física divide por 48
+medições tendo medido menos, todo dia, sem sintoma nenhum.
+
+**Ela guardou a hora que o arquivo jogou fora.** Chaveada em UTC, ela não tem o problema
+de formato que domina o resto deste projeto: na volta do horário de verão as duas leituras
+das 23:00 têm carimbos UTC diferentes e cabem as duas. Em 17/02/2018 e 16/02/2019 o dia
+chega com 50 registros em vez de 48. A V7 recuperou **37.797,471 MWmed às 23:00 de
+17/02/2018**, uma medição real que não existe no arquivo anual. Em 2016 e 2017 o dia chega
+com 48: nesses dois anos a hora se perdeu na API também.
+
+## As duas fontes discordam, e a discordância tem forma
+
+Esta é a parte que mudou o desenho. Em 35.040 horas de sobreposição, um ano inteiro, a API
+lê mais alto que o arquivo: +5,0% no Sudeste, +4,3% no Nordeste, +2,7% no Sul e +1,4% no
+Norte.
+
+A diferença é a soma de duas coisas. Uma parte é constante e continua lá às três da manhã,
+com o sol posto. A outra se move ao longo do dia, com vale de manhã cedo e pico à tarde.
+Essa segunda parte acompanha a geração em telhado com painel solar, a chamada geração
+distribuída: ela nunca passa pela rede, então o arquivo anual não a enxerga, e a API a
+estima e soma.
+
+Ou seja, nenhuma das duas está errada, e o pipeline não escolhe uma vencedora. Elas
+respondem perguntas diferentes: o arquivo diz quanta energia passou pela rede, a API diz
+quanta energia foi consumida. Elas ficam em tabelas separadas, e é essa separação que
+impede 26 anos de série histórica de ganharem um degrau de 5% no dia em que a segunda
+fonte entrou.
+
+Uma parte continua sem explicação: o Norte passa boa parte do dia **abaixo** de zero, ou
+seja, ali a API lê menos que o arquivo. Geração distribuída não dá conta disso. Fica
+anotado como pergunta em aberto, do lado de abril de 2020, e não como conclusão.
+
 ## As validações
 
 Rodam nesta ordem. As cinco primeiras bloqueiam a linha, a sexta marca.
@@ -91,6 +166,7 @@ Rodam nesta ordem. As cinco primeiras bloqueiam a linha, a sexta marca.
 | V5 | Faixa física, 0 < carga < 120.000 MWmed | bloqueia a linha |
 | V4 | Continuidade do calendário contra a grade real do fuso | reporta o buraco |
 | V6 | Salto atípico entre horas consecutivas | marca para revisão |
+| V7 | API contra arquivo: cobertura, e divergência por hora | marca e reporta |
 
 A ordem importa. O tratamento de fuso roda antes da faixa física porque, na entrada do
 horário de verão, o Sul reporta `0E-8` para a hora que não existiu. Rejeitar isso como
@@ -99,6 +175,20 @@ valor, é o instante. Validação na ordem errada produz explicação falsa.
 
 A separação entre regra dura e regra de alerta é proposital. A V6 não rejeita nada, porque
 o valor está correto. O que fugiu do padrão foi o que aconteceu naquela hora.
+
+A V7 tem duas metades de naturezas bem diferentes. Cobertura é fato duro e não precisa de
+limiar nenhum: ou a hora está nas duas fontes, ou não está. É ali que a hora recuperada do
+horário de verão aparece. A divergência numérica é sempre calculada e reportada, e marcada
+só quando sai da faixa medida para aquele subsistema **naquela hora do dia**. Faixa única
+por subsistema foi tentada e rejeitada: ela punha 100% das marcações entre 7h e 14h, ou
+seja, estava medindo o sol e não anomalia.
+
+Essa faixa também é a única regra do projeto que envelhece. Geração distribuída continua
+sendo instalada, então a diferença cresce junto, e uma faixa medida hoje fica apertada em
+dois anos. A taxa da calibragem mora no `config.py` ao lado da tabela, e o relatório
+compara cada execução com ela: se as marcações dispararem, o diagnóstico é "a régua ficou
+velha", não "o dado piorou". Regra calibrada que não sabe dizer quando precisa ser
+remedida vira alarme que ninguém escuta.
 
 ## O que o dado revelou
 
@@ -137,10 +227,19 @@ ETags e só baixa de novo o ano cujo arquivo remoto mudou, o que acontece mais d
 imagina: o ONS revisa dado já publicado.
 
 ```bash
-uv run python -m energy_load_etl.pipeline --sem-download   # usa o que está em data/raw
-uv run python -m energy_load_etl.pipeline --anos 2018 2019 # anos específicos
-uv run pytest                                              # 56 testes
+uv run python -m energy_load_etl.pipeline --sem-download     # usa o que está em data/raw
+uv run python -m energy_load_etl.pipeline --anos 2018 2019   # anos específicos
+uv run python -m energy_load_etl.pipeline --incremental      # últimos 30 dias, via API
+uv run python -m energy_load_etl.pipeline --incremental --dias 7
+uv run pytest                                                # 92 testes
 ```
+
+O modo incremental é função separada atrás de flag separada, e o `executar` não chama a
+API em lugar nenhum. É essa a garantia de que a API fora do ar não derruba o histórico, e
+ela é mais forte que envolver a chamada num `try`: não existe exceção de API para escapar,
+porque não há código de API rodando naquele caminho. Verificado apontando a URL para um
+host inexistente: o incremental falhou em 5,4 segundos sem levantar exceção, e os arquivos
+anuais processaram normalmente.
 
 ## O que ele grava
 
@@ -149,8 +248,10 @@ uv run pytest                                              # 56 testes
 | `data/raw/` | CSVs como o ONS publicou, nunca editados |
 | `data/processed/horario/ano=YYYY/id_subsistema=XX/` | dado horário, 933.620 linhas em 108 partições |
 | `data/processed/diario/`, `mensal/` | agregados, cada linha declarando de quantas horas é feita |
-| `data/processed/qualidade/` | linhas lidas, aprovadas e rejeitadas, ano a ano |
-| `data/rejected/` | cada linha rejeitada com regra e linha de origem, mais um relatório em Markdown |
+| `data/processed/verificada/ano=YYYY/id_subsistema=XX/` | dado semi-horário da API, janela móvel dos últimos 30 dias |
+| `data/processed/reconciliacao/` | saída da V7, uma linha por hora comparada com sua divergência |
+| `data/processed/qualidade/`, `qualidade_api/` | linhas lidas, aprovadas e rejeitadas, por ano e por execução incremental |
+| `data/rejected/` | cada linha rejeitada com regra e linha de origem, mais um relatório em Markdown por fonte |
 
 O Parquet ocupa 33 MB contra 39 MB de CSV bruto, carregando doze colunas a mais. `data/`
 está no gitignore e nada dali é commitado.
@@ -171,13 +272,14 @@ de médias diárias pesaria um dia de seis horas igual a um dia completo.
 src/energy_load_etl/
 ├── config.py      constantes, caminhos, limiares
 ├── extract.py     download com cache por ETag, leitura do CSV, localização de fuso
-├── validate.py    V1 a V6
+├── api_client.py  a API REST: retry, fatiamento, conferência de cobertura, reparo de JSON
+├── validate.py    V1 a V7
 ├── transform.py   a grade do fuso e as features de calendário
 ├── aggregate.py   diário e mensal, com completude
 ├── load.py        Parquet particionado, escrita idempotente
-└── pipeline.py    ponto de entrada único
+└── pipeline.py    ponto de entrada único, dois modos
 dashboard/app.py   Streamlit, lê só data/processed
-tests/             56 testes, fixtures sintéticas, datas reais de horário de verão
+tests/             92 testes, fixtures sintéticas, datas reais de horário de verão, sem rede
 ```
 
 Cada módulo faz uma coisa e é testável sozinho.
@@ -188,16 +290,18 @@ Cada módulo faz uma coisa e é testável sozinho.
 uv run pytest
 ```
 
-56 testes sobre fixtures sintéticas pequenas o bastante para serem lidas. Todo caso que
+92 testes sobre fixtures sintéticas pequenas o bastante para serem lidas. Todo caso que
 está nelas foi observado no dado real do ONS antes de virar teste, e os casos de horário
 de verão usam as datas verdadeiras, porque testar contra data inventada não provaria que o
 código conversa certo com o banco de fusos.
 
 ## Deploy
 
-Dois containers da mesma imagem, atrás do Caddy. O pipeline reprocessa a cada 12 horas e
-escreve num volume; o dashboard lê esse volume e serve a página. Passo a passo completo em
-[docs/DEPLOY.md](docs/DEPLOY.md).
+Dois containers da mesma imagem, atrás do Caddy. O container do pipeline roda dois ritmos
+num loop só, porque as duas fontes mudam em cadências diferentes: reprocessamento completo
+a cada 12 horas, que é a frequência com que o ONS republica os arquivos anuais, e passada
+na API a cada 3 horas. Ele escreve num volume; o dashboard lê esse volume e serve a
+página. Passo a passo completo em [docs/DEPLOY.md](docs/DEPLOY.md).
 
 Um detalhe que vale saber para qualquer container que lide com tempo: a imagem
 `python:3.12-slim` não traz o banco de fusos horários. Sem o `tzdata`, o `zoneinfo` não
